@@ -67,4 +67,4 @@ src/
 
 ## 📄 License
 
-Apache-2.0（与仓库 License 徽章一致，仅用于原型演示与学习交流）
+Apache-2.0（仅用于原型演示与学习交流）
