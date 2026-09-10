@@ -81,4 +81,4 @@ src/
 
 ## 📄 License
 
-Apache-2.0 (consistent with the License badge; for prototype demonstration and learning purposes only)
+Apache-2.0 (for prototype demonstration and learning purposes only)
