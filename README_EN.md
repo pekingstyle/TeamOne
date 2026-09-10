@@ -39,6 +39,16 @@ An interactive front-end prototype of **TeamOne**, a Git-based all-in-one R&D co
   - **Conflict center** – workload heatmap plus six conflict rules (CF-1 ~ CF-6)
   - **Reports** – burndown / cumulative flow / control chart / velocity / defect distribution / resource investment, plus a performance table and CSV export
 
+## 📷 Screenshots
+
+| | | |
+| --- | --- | --- |
+| <img src="docs/screenshots/dashboard.png" width="400" alt="Dashboard"><br>**Dashboard** — my red conflicts, sprint capacity, release gate, my todos and topics | <img src="docs/screenshots/reports.png" width="400" alt="Reports"><br>**Reports** — burndown / cumulative flow / control chart / velocity / defect distribution / resource investment, plus a performance table and CSV export | <img src="docs/screenshots/conflicts.png" width="400" alt="Conflict Center"><br>**Conflict Center** — workload heatmap + six conflict rules (CF-1 ~ CF-6) |
+| <img src="docs/screenshots/goals.png" width="400" alt="Strategic Goals"><br>**Strategic Goals** — goal cards plus a five-level drill-down tree (RoadMap → release → sprint → work item) | <img src="docs/screenshots/requirements.png" width="400" alt="Requirements"><br>**Requirements** — submit → multiple reviewers approve → accept → schedule | <img src="docs/screenshots/roadmap.png" width="400" alt="RoadMap"><br>**Product RoadMap** — goal/release dual views plus milestone squeeze warnings |
+| <img src="docs/screenshots/tasks.png" width="400" alt="Sprints & Tasks"><br>**Sprints & Tasks** — mixed board of tasks / test tasks / defects with capacity bars and deadline-override warnings | <img src="docs/screenshots/defects.png" width="400" alt="Defect Center"><br>**Defect Center** — severity color codes, release gate on blocking versions, four-way cross-links | <img src="docs/screenshots/delivery.png" width="400" alt="Releases"><br>**Releases** — release gate: publishing is locked automatically while critical / major defects remain open |
+| <img src="docs/screenshots/im.png" width="400" alt="Instant Messaging"><br>**Instant Messaging** — channels / topics / DMs with archive folding and clickable object reference cards | <img src="docs/screenshots/team.png" width="400" alt="Team & Permissions"><br>**Team & Permissions** — department × role × resource-level ACL matrix | <img src="docs/screenshots/repos.png" width="400" alt="Code Repositories"><br>**Code Repositories** — files / commits / branches plus WorkTree working copies and baseline management |
+| <img src="docs/screenshots/review.png" width="400" alt="Code Review"><br>**Code Review** — line-by-line diff plus a unit-test gate with dual coverage thresholds and an exemption flow | <img src="docs/screenshots/pipelines.png" width="400" alt="CI/CD Pipelines"><br>**CI/CD Pipelines** — multi-stage simulated pipeline execution with per-job logs | |
+
 ## 🚀 Getting Started
 
 ```bash

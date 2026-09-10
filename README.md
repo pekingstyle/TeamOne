@@ -25,6 +25,16 @@
 - **工程底座**：代码仓库（文件/提交/分支 + **WorkTree 工作副本与关系图** + **基线管理**：审批定版冻结）、代码评审（逐行 Diff、多评审人、**单元测试门禁**：覆盖率双阈值 + 豁免流程、rebase 拦截、冲突解决记录）、CI/CD（多阶段流水线模拟执行 + Job 日志）
 - **概览**：工作台（目标进度/我的冲突/发布门禁）、冲突中心（人员负载热力图 + 六类冲突判定 CF-1~6）、统计报表（燃尽/累积流/控制图/速率/缺陷分布/资源投入 + 绩效表 + CSV 导出）
 
+## 📷 界面预览
+
+| | | |
+| --- | --- | --- |
+| <img src="docs/screenshots/dashboard.png" width="400" alt="工作台"><br>**工作台** · 我的红色冲突、迭代容量、发布门禁、我的待办与话题 | <img src="docs/screenshots/reports.png" width="400" alt="统计报表"><br>**统计报表** · 燃尽/累积流/控制图/速率/缺陷分布/资源投入 + 绩效表 + CSV 导出 | <img src="docs/screenshots/conflicts.png" width="400" alt="冲突中心"><br>**冲突中心** · 人员负载热力图 + 6 类冲突规则（CF-1~6） |
+| <img src="docs/screenshots/goals.png" width="400" alt="战略目标"><br>**战略目标** · 目标卡 + 五层下钻树（RoadMap → 版本 → 迭代 → 工作项） | <img src="docs/screenshots/requirements.png" width="400" alt="需求管理"><br>**需求管理** · 提交 → 多评审人通过 → 受理 → 排期 | <img src="docs/screenshots/roadmap.png" width="400" alt="产品 RoadMap"><br>**产品 RoadMap** · 目标/版本双视角 + 里程碑挤压预警 |
+| <img src="docs/screenshots/tasks.png" width="400" alt="迭代与任务"><br>**迭代与任务** · 任务/测试任务/缺陷混排看板 + 容量条 + Deadline 越级预警 | <img src="docs/screenshots/defects.png" width="400" alt="缺陷中心"><br>**缺陷中心** · 严重度彩标 + 阻塞版本门禁 + 四联跳转 | <img src="docs/screenshots/delivery.png" width="400" alt="版本与发布"><br>**版本与发布** · 发布门禁：致命/严重缺陷未关闭自动锁定 |
+| <img src="docs/screenshots/im.png" width="400" alt="即时沟通"><br>**即时沟通** · 频道/话题/私聊三分类 + 归档折叠 + 对象引用卡 | <img src="docs/screenshots/team.png" width="400" alt="团队与权限"><br>**团队与权限** · 部门 × 角色 × 资源级 ACL 权限矩阵 | <img src="docs/screenshots/repos.png" width="400" alt="代码仓库"><br>**代码仓库** · 文件/提交/分支 + WorkTree 工作副本 + 基线管理 |
+| <img src="docs/screenshots/review.png" width="400" alt="代码评审"><br>**代码评审** · 逐行 Diff + 单元测试门禁（双阈值 + 豁免流程） | <img src="docs/screenshots/pipelines.png" width="400" alt="CI/CD 流水线"><br>**CI/CD 流水线** · 多阶段流水线模拟执行 + Job 日志 | |
+
 ## 🚀 运行
 
 ```bash
