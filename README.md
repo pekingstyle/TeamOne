@@ -4,7 +4,7 @@
 
 **Streamline Your R&D Workflow | OKR · Roadmap · Sprint · DevOps**
 
-[![License](https://img.shields.io/badge/license-Apache-2.0.svg)](LICENSE)
+[![License]([https://img.shields.io/badge/license-Apache-2.0.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web-green.svg)]()
 [![Status](https://img.shields.io/badge/status-stable-brightgreen.svg)]()
 
