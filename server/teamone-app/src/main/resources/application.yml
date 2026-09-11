@@ -1,0 +1,64 @@
+spring:
+  application:
+    name: teamone-server
+  datasource:
+    url: ${TEAMONE_DB_URL}
+    username: ${TEAMONE_DB_USER}
+    password: ${TEAMONE_DB_PASSWORD}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    default-schema: platform
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: platform
+  jackson:
+    default-property-inclusion: non_null
+  # Valkey（Redis 协议兼容；容器在 WSL 内，Windows 宿主经 localhost 转发访问）
+  # 未启动 Valkey 时服务照常运行：ACL 缓存自动降级直查（RedisDecisionCache 容错）
+  data:
+    redis:
+      host: ${TEAMONE_VALKEY_HOST:localhost}
+      port: ${TEAMONE_VALKEY_PORT:6379}
+      timeout: 2s
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  health:
+    # W1: Valkey 未上线，缓存可降级 → Redis 健康检查暂关（避免 health 503）。
+    # W3 接入 Outbox Stream 后恢复为 true（届时 Valkey 变为强依赖）。
+    redis:
+      enabled: false
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+teamone:
+  jwt:
+    secret: ${TEAMONE_JWT_SECRET:dev-secret-change-me-0123456789abcdef-please}
+    access-ttl-minutes: 15
+    refresh-ttl-days: 7
+  auth:
+    # 刷新令牌存储：jpa（默认，与 M0 一致）| redis（Valkey 验证后由 .env 切换）
+    refresh-store: ${TEAMONE_REFRESH_STORE:jpa}
+  security:
+    # OpenAPI 端点公开开关：dev 阶段 true；M3 私有化交付收紧为 false
+    openapi-public: true
+  cache:
+    # ACL 决策缓存 TTL（架构设计 §1.5：5min 兜底；W3 acl.changed 事件精准失效）
+    acl-ttl-seconds: 300
+
+logging:
+  level:
+    cn.teamone: DEBUG

@@ -1,4 +1,4 @@
-# TeamOne · 一站式研发协同平台（交互原型）
+# TeamOne · 一站式研发协同平台（全栈工程）
 
 <div align="center">
 
@@ -6,7 +6,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web-green.svg)]()
-[![Status](https://img.shields.io/badge/status-stable-brightgreen.svg)]()
+[![Backend](https://img.shields.io/badge/backend-Spring_Boot_3.5-blueviolet.svg)]()
+[![CI](https://img.shields.io/badge/CI-Gitea_Actions-success.svg)]()
 
 [中文](README.md) | [English](README_EN.md)
 
@@ -14,9 +15,11 @@
 
 ---
 
-基于 Git 的一站式研发协同平台 **TeamOne** 的可交互前端原型：把「战略目标 → 需求 → RoadMap → 版本 → 迭代 → 任务/测试任务/缺陷 → 代码评审 → CI/CD → 制品发布」的研发全流程搬到线上闭环，并以**对象化话题**串联团队协同。
+基于 Git 的一站式研发协同平台 **TeamOne**：把「战略目标 → 需求 → RoadMap → 版本 → 迭代 → 任务/测试任务/缺陷 → 代码评审 → CI/CD → 制品发布」的研发全流程搬到线上闭环，并以**对象化话题**串联团队协同。
 
-> 演示场景：TeamOne 研发团队使用 TeamOne 开发 TeamOne 自己（Dogfooding）。
+> 演示场景：TeamOne 研发团队使用 TeamOne 开发 TeamOne 自己（Dogfooding）——本仓库的构建与测试正是跑在 TeamOne 自建的 Gitea Actions 上。
+
+本仓库包含**可交互前端原型**（React 19，根目录）与**后端工程骨架**（`server/`，Spring Boot 3.5 模块化单体，已实现认证/权限/WS/CI 并通过全部验收）。
 
 ## ✨ 功能一览
 
@@ -35,7 +38,24 @@
 | <img src="docs/screenshots/im.png" width="400" alt="即时沟通"><br>**即时沟通** · 频道/话题/私聊三分类 + 归档折叠 + 对象引用卡 | <img src="docs/screenshots/team.png" width="400" alt="团队与权限"><br>**团队与权限** · 部门 × 角色 × 资源级 ACL 权限矩阵 | <img src="docs/screenshots/repos.png" width="400" alt="代码仓库"><br>**代码仓库** · 文件/提交/分支 + WorkTree 工作副本 + 基线管理 |
 | <img src="docs/screenshots/review.png" width="400" alt="代码评审"><br>**代码评审** · 逐行 Diff + 单元测试门禁（双阈值 + 豁免流程） | <img src="docs/screenshots/pipelines.png" width="400" alt="CI/CD 流水线"><br>**CI/CD 流水线** · 多阶段流水线模拟执行 + Job 日志 | |
 
+## 📁 仓库结构
+
+```
+├── src/ …            # 前端（React 19 + TS + Vite，可交互原型，仓库根目录）
+├── server/           # 后端（Spring Boot 3.5 + JDK 17，Maven 七模块模块化单体）
+│   ├── teamone-shared/      # 错误码目录/权限注解等零业务横切件
+│   ├── teamone-platform/    # 用户/部门/ACL 四步短路授权链（对外 SPI）
+│   ├── teamone-prd/         # 产品研发域（目标/版本/迭代/工作项，里程碑填充中）
+│   ├── teamone-collab/      # 协同域（会话/消息/话题，里程碑填充中）
+│   ├── teamone-eng/         # 工程底座域（Gitea 适配/MR 门禁，里程碑填充中）
+│   ├── teamone-insight/     # 概览域（纯消费者，里程碑填充中）
+│   └── teamone-app/         # Boot 装配：安全/JWT/WS 网关/Flyway/CI 流水线
+└── deploy/           # 部署：docker-compose（Valkey/MinIO/Gitea）、一键起停、PG 建库/备份
+```
+
 ## 🚀 运行
+
+### 前端（交互原型）
 
 ```bash
 npm install
@@ -44,27 +64,31 @@ npm run build    # 生产构建 → dist/
 npm run preview  # 本地预览构建产物
 ```
 
+### 后端（已实现：登录/JWT/刷新令牌旋转与吊销、ACL 四步授权链、WS 协议、Flyway 迁移、Gitea Actions CI 自举）
+
+```bash
+# 前置：外部 PostgreSQL（连接信息写入 deploy/.env，参考 .env.example）
+bash deploy/dev.sh run    # 构建并启动 http://localhost:8080（Windows 亦可用 deploy/dev.cmd）
+
+# 开发种子账号（首次启动自动创建）
+#   admin / Admin@123（OWNER，全量权限）
+#   dev1  / Dev@12345（无授权 → 验证默认拒绝 403）
+#   dev2  / Dev@12345（ACL 授予 user:list → 验证授予路径 200）
+```
+
 ## 🧱 技术栈
 
-- React 19 + TypeScript + Vite
-- Tailwind CSS v4（Fancy 配色主题，`[data-theme="dark"]` 保留深色）
-- lucide-react 图标；无后端、无其他运行时依赖
-- 内存数据仓库（`src/data/store.ts`）+ `useSyncExternalStore` 订阅刷新，模拟实时：流水线执行、环境部署、IM 回复、话题自动归档
-- 冲突检测 `computeConflicts()`、话题干系人 `stakeholdersFor()` 等均为纯函数，可平移至后端
+**前端**：React 19 + TypeScript + Vite · Tailwind CSS v4（Fancy 配色，`[data-theme="dark"]` 保留深色）· lucide-react 图标 · 内存数据仓库（`src/data/store.ts`）+ `useSyncExternalStore` 订阅刷新 · 冲突检测 `computeConflicts()`、话题干系人 `stakeholdersFor()` 等均为纯函数，可平移至后端
 
-## 📁 结构
+**后端**：Spring Boot 3.5.7 + JDK 17 模块化单体（Maven 七模块，ArchUnit 固化依赖纪律）· PostgreSQL + Flyway 全托管 · JWT（15min）+ 可吊销刷新令牌（旋转 + Valkey 存储）· 四步短路授权链 + 资源级 ACL · 自研 WebSocket 网关（auth/ready/ping/pong/ack 协议）· 事件驱动（事务性 Outbox → Valkey Stream，里程碑接入）· Gitea 1.27 作为 Git 内核 · Gitea Actions CI 自举（构建/测试跑在自家 Gitea 上）
 
-```
-src/
-├── data/           # 类型定义 + 内存数据仓库（种子数据/动作/纯函数算法）
-├── components/     # 共享 UI 原子（Avatar/Pill/ProgressRing/HeatCell…）
-├── features/       # 页面模块（dashboard/goals/requirements/roadmap/tasks/
-│                   #   defects/delivery/topics(im)/team/conflicts/reports/
-│                   #   repos/review/cicd）
-├── nav.ts          # 导航配置与页面 props 约定
-└── App.tsx         # 应用外壳（侧栏主线轨道导航 + 顶栏 + 路由）
-```
+## 🧭 里程碑进度
+
+- ✅ **M0 框架搭建**：工程骨架、建库迁移、登录/ACL 矩阵、WS 骨架、错误信封——全部验收通过
+- ✅ **M1-W1 工程化地基**：git/Gitea 入驻 + CI 绿灯、ArchUnit 七规则、集成测试回归网（Testcontainers）、Valkey 接入、OpenAPI 契约
+- 🔜 **M1-W2~W4**：缺陷闭环端到端（发布门禁）、事件链路、话题自动化、webhook 映射
+- 设计文档（调研/需求/设计/选型/架构/实施计划共六篇）在内部仓库维护，暂未随本仓库公开
 
 ## 📄 License
 
-Apache-2.0（仅用于原型演示与学习交流）
+Apache-2.0（仅用于演示与学习交流）

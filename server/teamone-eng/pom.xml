@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>cn.teamone</groupId>
+    <artifactId>teamone-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>teamone-eng</artifactId>
+  <name>TeamOne :: Eng</name>
+  <description>工程底座域：Gitea 适配层/MR 评审门禁/基线/WorkTree/CI 视图（M1 实现，见架构设计 §6.3）</description>
+  <dependencies>
+    <dependency>
+      <groupId>cn.teamone</groupId>
+      <artifactId>teamone-shared</artifactId>
+    </dependency>
+  </dependencies>
+</project>

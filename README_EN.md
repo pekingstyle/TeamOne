@@ -1,4 +1,4 @@
-# TeamOne · All-in-One R&D Collaboration Platform (Interactive Prototype)
+# TeamOne · All-in-One R&D Collaboration Platform (Full-Stack)
 
 <div align="center">
 
@@ -6,7 +6,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Web-green.svg)]()
-[![Status](https://img.shields.io/badge/status-stable-brightgreen.svg)]()
+[![Backend](https://img.shields.io/badge/backend-Spring_Boot_3.5-blueviolet.svg)]()
+[![CI](https://img.shields.io/badge/CI-Gitea_Actions-success.svg)]()
 
 [中文](README.md) | [English](README_EN.md)
 
@@ -14,9 +15,11 @@
 
 ---
 
-An interactive front-end prototype of **TeamOne**, a Git-based all-in-one R&D collaboration platform. It brings the full delivery loop online — **strategic goals → requirements → RoadMap → releases → sprints → tasks / test tasks / defects → code review → CI/CD → artifact release** — and ties team collaboration together with **object-centric topics**.
+**TeamOne** is a Git-based all-in-one R&D collaboration platform. This repository now contains **two parts**: the interactive front-end prototype (React 19, repository root) and the back-end engineering skeleton (`server/`, a Spring Boot 3.5 modular monolith with auth / ACL / WebSocket / CI already implemented and accepted). It brings the full delivery loop online — **strategic goals → requirements → RoadMap → releases → sprints → tasks / test tasks / defects → code review → CI/CD → artifact release** — and ties team collaboration together with **object-centric topics**.
 
-> Demo scenario: the TeamOne team builds TeamOne with TeamOne itself (dogfooding).
+> Demo scenario: the TeamOne team builds TeamOne with TeamOne itself (dogfooding) — the build and tests of this very repository run on our self-hosted Gitea Actions.
+
+See [README.md](README.md) (Chinese) for the full documentation, including backend quick-start and milestone progress.
 
 ## ✨ Features
 

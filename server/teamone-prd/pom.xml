@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>cn.teamone</groupId>
+    <artifactId>teamone-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>teamone-prd</artifactId>
+  <name>TeamOne :: PRD</name>
+  <description>产品研发域：目标/需求/RoadMap/版本/迭代/工作项/冲突（M1 实现，见架构设计 §6.1）</description>
+  <dependencies>
+    <dependency>
+      <groupId>cn.teamone</groupId>
+      <artifactId>teamone-shared</artifactId>
+    </dependency>
+  </dependencies>
+</project>

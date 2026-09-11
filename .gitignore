@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ---- backend / deploy ----
+server/**/target/
+logs/
+deploy/.env
+.env
+!.env.example
+.workbuddy/
+backups/
