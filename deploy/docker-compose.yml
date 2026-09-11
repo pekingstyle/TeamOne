@@ -1,8 +1,7 @@
-# TeamOne 附属组件。WSL 为 mirrored 网络模式（.wslconfig），docker 端口发布在该模式下数据路径
-# 不通（实测 Windows/WSL 双向 localhost:3000 均挂起），故 valkey/gitea 用 host 网络直绑端口；
-# 镜像网络下 localhost 双向互通：Windows 直达 :3000/:6379，容器经 localhost 回调宿主 :8080。
+# TeamOne 附属组件（D-2026-09-11-B：Git 内核自研，已移除 gitea/runner）
+# WSL 为 mirrored 网络模式，docker 端口发布在该模式下数据路径不通，故容器用 host 网络直绑。
+# 仓库存储为本地 bare repo（见 deploy/git-init-repo.sh）；CI 为自研（deploy/ci.sh）。
 # 用法（WSL 内）: docker compose -f /mnt/c/.../deploy/docker-compose.yml up -d
-# act_runner 不走 compose：注册需自定义 config（container.network=host），由 w1-10-bootstrap.sh 用 docker run 托管。
 name: teamone
 
 services:
@@ -29,24 +28,6 @@ services:
       - miniodata:/data
     restart: unless-stopped
 
-  gitea:
-    image: gitea/gitea:1.27
-    container_name: teamone-gitea
-    profiles: ["eng"]           # --profile eng 时启用
-    environment:
-      GITEA__server__DOMAIN: localhost
-      GITEA__server__ROOT_URL: http://localhost:3000/
-      GITEA__service__DISABLE_REGISTRATION: "true"
-      # 跳过安装向导（CLI 建号要求已安装状态）；Gitea 自身元数据用 SQLite（dev 足够）
-      GITEA__security__INSTALL_LOCK: "true"
-      GITEA__database__DB_TYPE: sqlite3
-      GITEA__database__PATH: /data/gitea/gitea.db
-    network_mode: host          # 3000/2222 直绑 WSL（镜像模式下 Windows localhost:3000 可达）
-    volumes:
-      - giteadata:/data
-    restart: unless-stopped
-
 volumes:
   valkeydata:
   miniodata:
-  giteadata:
