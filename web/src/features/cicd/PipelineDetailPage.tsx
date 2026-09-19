@@ -3,7 +3,7 @@ import { Fragment, useState } from 'react'
 import { ArrowLeft, CalendarClock, GitBranch, GitCommitHorizontal, Play, Sparkles, Timer, Loader2 } from 'lucide-react'
 import type { Job, RunStatus, Stage } from '../../data/types'
 import { pipelineById, repoById, runPipeline, useStore, userById } from '../../data/store'
-import { usePipeline, pipelinesApi } from '../../api/queries'
+import { usePipeline, pipelinesApi, normRunStatus } from '../../api/queries'
 import { Avatar, Badge, Btn, Card, CardHeader, Empty, StatusDot, runStatusText } from '../../components/ui'
 import type { PageProps } from '../../nav'
 
@@ -69,7 +69,7 @@ export default function PipelineDetailPage({ nav, id }: PageProps) {
         triggerUserId: remotePipeline.triggerUserId || 'u-eng-lead',
         durationSec: remotePipeline.durationSec ?? 0,
         startedAt: remotePipeline.startedAt ? remotePipeline.startedAt.slice(0, 19).replace('T', ' ') : '-',
-        status: remotePipeline.status as RunStatus,
+        status: normRunStatus(remotePipeline.status),
         stages: remotePipeline.stages.map((s) => ({
           name: s.name,
           jobs: s.jobs.map((j) => ({

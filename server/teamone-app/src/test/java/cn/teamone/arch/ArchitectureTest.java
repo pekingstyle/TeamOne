@@ -73,13 +73,16 @@ class ArchitectureTest {
             .should().dependOnClassesThat().resideInAPackage("cn.teamone.app..");
 
     /**
-     * R8（M2-INC-1 W1 清账，07 §2.3 纪律的程序化视图）：Git 子进程只能从
-     * cn.teamone.eng.infra.git..（GitCommandPort：参数白名单 + 无 shell + 5s 超时强杀）拉起。
+     * R8（M2-INC-1 W1 清账，07 §2.3 纪律的程序化视图；M4-INC1 修订）：<b>git</b> 子进程只能从
+     * cn.teamone.eng.infra.git..（GitCommandPort：参数白名单 + 无 shell + 超时强杀）拉起。
+     * M4-INC1 起允许第二个进程面：cn.teamone.eng.runner..（内嵌 Runner 的构建工具子进程——
+     * mvn/npm 及 which 探测，命令来自服务端 PipelineJobTemplates 模板，无 shell 无用户输入）。
      * 覆盖 ProcessBuilder 两个构造器：String...（编译为 String[]）与 List。
      */
     @ArchTest
     static final ArchRule R8_process_only_via_git_infra = noClasses()
             .that().resideOutsideOfPackage("cn.teamone.eng.infra.git..")
+            .and().resideOutsideOfPackage("cn.teamone.eng.runner..")
             .should().callConstructor(ProcessBuilder.class, String[].class)
             .orShould().callConstructor(ProcessBuilder.class, java.util.List.class);
 }

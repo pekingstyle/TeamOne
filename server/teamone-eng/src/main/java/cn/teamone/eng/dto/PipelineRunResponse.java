@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+
 /**
  * 流水线运行详情响应 DTO。
  * <p>
@@ -26,6 +27,10 @@ import java.util.UUID;
  * @param startedAt     开始执行时间戳（UTC）
  * @param finishedAt    执行完成时间戳（UTC）
  * @param createdAt     创建时间戳（UTC）
+ * @param buildSystem   构建体系识别结果（maven/npm/unknown；V22 · M4-INC1，列表契约字段，
+ *                      历史/模拟 run 透出 unknown）
+ * @param jobs          真实执行作业行（详情契约字段；列表形态与历史模拟 run 为 null/缺省，
+ *                      前端按空数组缺省渲染）
  *
  * @author Ivan Yang, 2026-09-13
  */
@@ -45,6 +50,8 @@ public record PipelineRunResponse(
         List<StageDto> stages,
         Instant startedAt,
         Instant finishedAt,
-        Instant createdAt
+        Instant createdAt,
+        String buildSystem,
+        List<PipelineJobDto> jobs
 ) {}
 

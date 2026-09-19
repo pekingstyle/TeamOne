@@ -1143,4 +1143,214 @@ public class GitCommandPort implements GitPort {
             // 元数据 prune 为尽力而为
         }
     }
+
+    // ---------- 工作区导出（M4-INC1 真实执行：git archive 代替 clone · docs/v2/11 §4.3 D5） ----------
+
+    /** archive 超时（秒）：归档流式解包比常规读命令重，对齐 cherry-pick worktree 检出的放宽档 */
+    private static final long ARCHIVE_TIMEOUT_SECONDS = 60;
+
+    @Override
+    public void exportArchive(String repoKey, String ref, Path destDir) {
+        // ---- 白名单校验（先于任何 IO，防注入/路径逃逸）----
+        requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
+        if (ref == null || ref.isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "导出引用不能为空");
+        }
+        String cleanRef = ref.trim();
+        validateRef(cleanRef);
+        if (destDir == null || !Files.isDirectory(destDir)) {
+            throw new BusinessException(ErrorCode.PLT_4000, "导出目标目录不存在或不是目录");
+        }
+        String gitDir = resolveGitDir(repoKey);
+        Path absDest = destDir.toAbsolutePath().normalize();
+
+        List<String> cmd = buildArchiveCommand(gitDir, cleanRef);
+        log.debug("[git] repo={} cmd={}", repoKey, cmd);
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.environment().putIfAbsent("GIT_TERMINAL_PROMPT", "0");
+        Process proc;
+        try {
+            proc = pb.start();
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.SRV_5030, "git 进程启动失败（git 不可用？）");
+        }
+        // 看门狗：归档是流式解包（读阻塞在 tar 流上，waitFor 只能事后判），超时须由
+        // 独立线程强杀进程——进程被杀后读取流关闭，解包以 IOException 失败收口
+        Thread watchdog = new Thread(() -> {
+            try {
+                if (!proc.waitFor(ARCHIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    proc.destroyForcibly();
+                }
+            } catch (InterruptedException ignored) {
+                // 主流程已收口，看门狗静默退场
+            }
+        }, "git-archive-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+
+        try {
+            StringBuilder errSink = new StringBuilder();
+            Thread errDrain = drain(proc.getErrorStream(), errSink);
+            try (InputStream in = proc.getInputStream()) {
+                untar(in, absDest);
+            }
+            int code = proc.waitFor();
+            errDrain.join(1000);
+            if (code != 0) {
+                String err = errSink.toString();
+                if (err.contains("Not a valid object name") || err.contains("does not exist")) {
+                    throw new BusinessException(ErrorCode.PLT_4040, "指定的分支、提交或路径不存在");
+                }
+                throw new BusinessException(ErrorCode.SRV_5030,
+                        "git archive 失败（exit " + code + "），Git 仓库目录不可用");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            proc.destroyForcibly();
+            throw new BusinessException(ErrorCode.SRV_5030, "git archive 等待被中断");
+        } catch (IOException e) {
+            proc.destroyForcibly();
+            throw new BusinessException(ErrorCode.SRV_5030,
+                    "归档解包失败（可能因超时强杀中断）: " + e.getMessage());
+        }
+    }
+
+    /** `git --git-dir <bare> archive --format=tar <ref>`（包内可见供纯单测） */
+    static List<String> buildArchiveCommand(String gitDir, String ref) {
+        return List.of("git", "--git-dir", gitDir, "archive", "--format=tar", ref);
+    }
+
+    /** tar 头块长度（POSIX ustar 固定 512 字节） */
+    private static final int TAR_BLOCK = 512;
+    /** tar 流正常结尾：连续两个全零块；读到全零块即可停 */
+    private static final byte[] ZERO_BLOCK = new byte[TAR_BLOCK];
+
+    /**
+     * 最小 tar 解包器（git archive 产出子集 · 包内可见供纯单测）。
+     *
+     * <p>支持：常规文件（'0'/'\0'）与目录（'5'）；ustar prefix 长路径。跳过：pax 全局/扩展头
+     * （'g'/'x'——git archive 以 commit id 注释产出全局头）、符号链接（'2'，作业工作区不落地，
+     * 防逃逸；M4-INC2 评估）与其它特殊类型（内容块按 size 对齐跳过）。安全红线：条目路径
+     * 绝对化/含 .. 段一律拒绝（SRV_5030），落点必须仍在 destDir 内。</p>
+     */
+    static void untar(InputStream in, Path destDir) throws IOException {
+        byte[] header = new byte[TAR_BLOCK];
+        while (true) {
+            int got = readFully(in, header);
+            if (got == 0) {
+                return; // 流尽（无结尾零块的非规范流也容忍）
+            }
+            if (got < TAR_BLOCK) {
+                throw new IOException("tar 头块截断（" + got + " 字节）");
+            }
+            if (isZeroBlock(header)) {
+                return; // 结尾零块
+            }
+            String name = tarString(header, 0, 100);
+            long size = tarOctal(header, 124, 12);
+            char typeFlag = (char) header[156];
+            String prefix = tarString(header, 345, 155);
+            String entry = prefix.isEmpty() ? name : prefix + "/" + name;
+            if (entry.startsWith("./")) {
+                entry = entry.substring(2);
+            }
+            long padded = (size + TAR_BLOCK - 1) / TAR_BLOCK * TAR_BLOCK;
+
+            if (entry.isEmpty() || entry.startsWith("/") || entry.contains("..")) {
+                throw new IOException("tar 条目路径越界拒绝: " + entry);
+            }
+            if (typeFlag == '5') {
+                Files.createDirectories(destDir.resolve(entry).normalize());
+                skipFully(in, padded); // 目录条目 size 通常为 0，按对齐块统一跳过
+            } else if (typeFlag == '0' || typeFlag == '\0') {
+                Path target = destDir.resolve(entry).normalize();
+                if (!target.startsWith(destDir)) {
+                    throw new IOException("tar 条目路径越界拒绝: " + entry);
+                }
+                Files.createDirectories(target.getParent());
+                try (var out = Files.newOutputStream(target)) {
+                    transferLimited(in, out, size);
+                }
+                if (padded > size) {
+                    skipFully(in, padded - size); // 内容块 512 对齐的补位
+                }
+            } else {
+                // pax 头 / 符号链接 / 其它特殊类型：内容块按 size 对齐跳过（目录性元数据
+                // 由后续文件条目的 createDirectories 补齐，无须落地）
+                skipFully(in, padded);
+            }
+        }
+    }
+
+    /** 读满 n 字节或至流尽；返回实读字节数 */
+    private static int readFully(InputStream in, byte[] buf) throws IOException {
+        int off = 0;
+        while (off < buf.length) {
+            int n = in.read(buf, off, buf.length - off);
+            if (n < 0) {
+                break;
+            }
+            off += n;
+        }
+        return off;
+    }
+
+    private static void skipFully(InputStream in, long n) throws IOException {
+        long left = n;
+        while (left > 0) {
+            int want = (int) Math.min(TAR_BLOCK, left);
+            byte[] chunk = in.readNBytes(want); // 恰读 want 字节——多读会把下一头块吃掉导致错位
+            if (chunk.length < want) {
+                throw new IOException("tar 内容块截断");
+            }
+            left -= want;
+        }
+    }
+
+    /** 拷贝恰好 size 字节（tar 内容无 length 前缀，尺寸即边界） */
+    private static void transferLimited(InputStream in, java.io.OutputStream out, long size) throws IOException {
+        byte[] buf = new byte[8192];
+        long left = size;
+        while (left > 0) {
+            int want = (int) Math.min(buf.length, left);
+            int n = in.read(buf, 0, want);
+            if (n < 0) {
+                throw new IOException("tar 内容块截断");
+            }
+            out.write(buf, 0, n);
+            left -= n;
+        }
+    }
+
+    private static boolean isZeroBlock(byte[] header) {
+        for (byte b : header) {
+            if (b != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** tar 头字符串字段：NUL/空格截断 */
+    private static String tarString(byte[] header, int off, int len) {
+        int end = off;
+        int max = Math.min(off + len, header.length);
+        while (end < max && header[end] != 0 && header[end] != ' ') {
+            end++;
+        }
+        return new String(header, off, end - off, StandardCharsets.UTF_8);
+    }
+
+    /** tar 头八进制数值字段（size/mtime 等）：NUL/空格容忍，空值当 0 */
+    private static long tarOctal(byte[] header, int off, int len) {
+        String s = tarString(header, off, len).trim();
+        if (s.isEmpty()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(s, 8);
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
 }

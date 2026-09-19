@@ -109,6 +109,20 @@ public class PipelineRun {
     private List<Map<String, Object>> stages = new ArrayList<>();
 
     /**
+     * 构建体系识别结果（V22 加列 · M4-INC1 §2 识别矩阵最小版）：maven/npm/unknown。
+     * 历史模拟 run 为 NULL（API 层透出 unknown，前端徽章缺省安全）。
+     */
+    @Column(name = "build_system")
+    private String buildSystem;
+
+    /**
+     * 构建层相对路径（V22 加列）：构建体系 manifest 所在目录相对仓库根（""=根，如 server、web）。
+     * 作业模板的 &lt;workdir&gt; 前缀与 surefire 扫描起点均取自本列。
+     */
+    @Column(name = "workdir")
+    private String workdir;
+
+    /**
      * 流水线开始执行时间戳。
      */
     @Column(name = "started_at")
@@ -236,6 +250,22 @@ public class PipelineRun {
 
     public void setStages(List<Map<String, Object>> stages) {
         this.stages = (stages != null) ? stages : new ArrayList<>();
+    }
+
+    public String getBuildSystem() {
+        return buildSystem;
+    }
+
+    public void setBuildSystem(String buildSystem) {
+        this.buildSystem = buildSystem;
+    }
+
+    public String getWorkdir() {
+        return workdir;
+    }
+
+    public void setWorkdir(String workdir) {
+        this.workdir = workdir;
     }
 
     public Instant getStartedAt() {

@@ -1509,6 +1509,38 @@ export interface RemoteStage {
 }
 
 /**
+ * 流水线真实执行作业明细（⑥k-B 契约：GET /api/v1/pipelines/{id} 在既有字段外加 jobs[]，全部缺省安全）
+ */
+export interface RemotePipelineJob {
+  /** 作业唯一标识 */
+  id: string
+  /** 所属阶段：build=构建 / test=测试（真实执行 Build→Test 链式，作业逐个 running） */
+  stage: 'build' | 'test' | string
+  /** 作业显示名称 */
+  name: string
+  /** 作业状态：pending/running/success/failed/skipped（真实内核用 success，展示前经 normRunStatus 归一化） */
+  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | string
+  /** 进程退出码（未结束/未运行为 null） */
+  exitCode?: number | null
+  /** 作业开始时间（ISO-8601，未开始为 null） */
+  startedAt?: string | null
+  /** 作业结束时间（ISO-8601，未结束为 null） */
+  finishedAt?: string | null
+  /** 尾部日志文本（可 null；模拟运行或未开始时为空） */
+  logTail?: string | null
+  /** 失败原因（超时/工具缺失/环境故障；日志为空时兜底展示——QA 复审 MUST-FIX） */
+  errorMsg?: string | null
+}
+
+/**
+ * run/job 状态归一化：真实执行内核 run.status/job.status 语义为 pending/running/success/failed，
+ * 前端 RunStatus 历史口径为 passed——统一在数据入口把 success 折叠为 passed（其余原样透传）。
+ */
+export function normRunStatus(s: string | undefined): 'passed' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled' {
+  return s === 'success' ? 'passed' : ((s ?? 'pending') as 'passed' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled')
+}
+
+/**
  * 远程流水线运行记录（映射 eng.pipeline_run 表与 PipelineRunResponse）
  */
 export interface RemotePipelineRun {
@@ -1542,6 +1574,10 @@ export interface RemotePipelineRun {
   durationSec: number
   /** 各阶段及作业明细 */
   stages: RemoteStage[]
+  /** 构建体系标识（⑥k-B 契约：列表项在既有字段外加 buildSystem；缺省安全，旧数据无此字段按 unknown 展示） */
+  buildSystem?: 'maven' | 'npm' | 'unknown' | string
+  /** 真实执行作业明细（详情契约新增；模拟时代旧 run 无此字段 → 页面显示「模拟运行（无作业明细）」） */
+  jobs?: RemotePipelineJob[]
 }
 
 /**
@@ -1596,6 +1632,12 @@ export function usePipelines(repoId?: string, branch?: string, status?: string) 
       if (status) p.set('status', status)
       return api<{ items: RemotePipelineRun[]; page: number; size: number; total: number }>(`/api/v1/pipelines?${p.toString()}`)
     },
+    // 运行中行状态自动刷新（⑥k-B）：页面存在 running/pending 的 run 时 3s 轮询，全部落定后自动关闭
+    refetchInterval: (query) => {
+      const items = query.state.data?.items
+      if (!items) return false
+      return items.some((r) => r.status === 'running' || r.status === 'pending') ? 3000 : false
+    },
   })
 }
 
@@ -1608,6 +1650,15 @@ export function usePipeline(id: string | undefined) {
     queryKey: ['pipeline', id],
     enabled: !!id,
     queryFn: () => api<RemotePipelineRun>(`/api/v1/pipelines/${encodeURIComponent(id!)}`),
+    // running 作业的详情 3s 轮询刷新（⑥k-B）：run 或任一作业仍处于 running/pending 时开启，落定即关
+    refetchInterval: (query) => {
+      const d = query.state.data
+      if (!d) return false
+      const active =
+        d.status === 'running' || d.status === 'pending' ||
+        (d.jobs ?? []).some((j) => j.status === 'running' || j.status === 'pending')
+      return active ? 3000 : false
+    },
   })
 }
 

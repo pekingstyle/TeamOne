@@ -84,6 +84,27 @@ teamone:
     # 未配置时服务正常起（GitPort 调用时才失败 / hook 端点 401 fail-closed），W4 收口由总监在 .env 配置
     root: ${TEAMONE_GIT_ROOT:}
     hook-token: ${TEAMONE_HOOK_TOKEN:}
+  pipeline:
+    # CI 流水线执行模式灰度开关（M4-INC1 真实执行引擎 · docs/v2/11 §3/§4）：
+    #   false（默认）= 真实执行——trigger 时识别构建体系（BuildSystemDetector：根/一级子目录
+    #     pom.xml→maven、package.json→npm，Dockerfile 不计构建，都不中→unknown 直接 failed），
+    #     建 eng.pipeline_job 作业链（构建→单测），内嵌 Runner（SKIP LOCKED 认领 + git archive
+    #     导出工作区 + mvn/npm 真实执行 + surefire 聚合）驱动，作业结果回写 run/stages，
+    #     并以真实单测数据回填 MR 门禁（覆盖率沿用旧值，真实计算 M4-INC2）。
+    #   true = 旧模拟路径——executePipelineStages 同步模拟恒 passed + 演示数据（82/82.5%/88.0%）
+    #     回填 MR 门禁，不建作业行（IT/降级用）。历史模拟 run 的 jobs 恒空，前端缺省安全。
+    simulated: ${TEAMONE_PIPELINE_SIMULATED:false}
+    # Runner 认领轮询间隔毫秒（@Scheduled fixedDelay；单飞并发 1，调小只影响排队延迟）
+    poll-interval-ms: ${TEAMONE_PIPELINE_POLL_INTERVAL_MS:5000}
+    # 真实执行的工作区根：须为 docker daemon 可见路径（server 容器与 WSL 宿主同路径双向 bind；
+    # 初版进程内直跑 mvn 实测两次拖垮 WSL VM，已改为每作业容器隔离——docs/v2/11 §4）
+    workspace-dir: /teamone-ws
+    # 同一工作区的 daemon 侧（宿主）路径——作业容器 -v 挂载时把容器内路径翻译回宿主路径（留空=同机同路径直跑）
+    workspace-host-dir: /var/lib/teamone-ws
+    # 工具镜像白名单（docs/v2/11 §4）：maven 与容器化 IT 同镜像；npm 留空=该体系作业诚实降级（M5 镜像化）
+    tool-image:
+      maven: ${TEAMONE_PIPELINE_MAVEN_IMAGE:maven:3.9-eclipse-temurin-17}
+      npm: ${TEAMONE_PIPELINE_NPM_IMAGE:}
   mr:
     gate:
       # 单测门禁双阈值（百分比）：整体覆盖率 / patch（增量）覆盖率——

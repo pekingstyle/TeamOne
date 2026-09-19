@@ -1,5 +1,6 @@
 package cn.teamone.eng.infra.git;
 
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -225,4 +226,18 @@ public interface GitPort {
      * @return 拣选生成的新提交 SHA
      */
     String cherryPick(String repoKey, String commitSha, String targetBranch);
+
+    /**
+     * 导出指定 ref 的源码归档并解包到目标目录（M4-INC1 · docs/v2/11 §4.3/D5：
+     * {@code git archive <ref>} 代替 clone，裸库免检出，作为 CI 作业工作区）。
+     *
+     * <p>实现必须：repoKey/ref 白名单校验、destDir 已存在且为目录、tar 条目路径越界
+     * （.. / 绝对路径）拒绝、超时强杀、退出码非零抛 SRV_5030；目标目录内容物只增不查，
+     * 清空与回收由调用方（Runner）负责。</p>
+     *
+     * @param repoKey 仓库键（相对 TEAMONE_GIT_ROOT，如 teamone/teamone.git）
+     * @param ref     引用名（分支/tag/sha；通常为 run 的 commitSha，缺省语义不适用——须显式）
+     * @param destDir 解包目标目录（须已存在；作业工作区）
+     */
+    void exportArchive(String repoKey, String ref, Path destDir);
 }
