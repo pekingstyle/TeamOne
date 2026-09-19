@@ -3,10 +3,12 @@ package cn.teamone.eng.api;
 import cn.teamone.eng.app.BranchProtectionService;
 import cn.teamone.eng.app.BranchRuleService;
 import cn.teamone.eng.app.RepositoryProvisionService;
+import cn.teamone.eng.app.RepoPermChecker;
 import cn.teamone.eng.domain.Repository;
 import cn.teamone.eng.dto.CherryPickRequest;
 import cn.teamone.eng.dto.CreateBranchRequest;
 import cn.teamone.eng.dto.CreateRepositoryRequest;
+import cn.teamone.eng.dto.MyRepoPermissionsResponse;
 import cn.teamone.eng.infra.git.GitBlob;
 import cn.teamone.eng.infra.git.GitBranch;
 import cn.teamone.eng.infra.git.GitCommit;
@@ -14,11 +16,12 @@ import cn.teamone.eng.infra.git.GitPort;
 import cn.teamone.eng.infra.git.GitTag;
 import cn.teamone.eng.infra.git.GitTreeItem;
 import cn.teamone.eng.repo.RepositoryRepository;
-import cn.teamone.platform.authz.RepoAclService;
 import cn.teamone.platform.authz.RepoActions;
+import cn.teamone.platform.authz.RepoRole;
 import cn.teamone.platform.domain.AppUser;
 import cn.teamone.shared.api.BusinessException;
 import cn.teamone.shared.api.ErrorCode;
+import cn.teamone.shared.api.PermissionDeniedException;
 import cn.teamone.shared.auth.RequirePerm;
 import cn.teamone.shared.auth.RequireRepoPerm;
 import org.slf4j.Logger;
@@ -46,6 +49,15 @@ import java.util.UUID;
  * <p>提供仓库列表/详情、分支/Tag、提交历史分页、目录树与文件内容查询，以及分支创建/删除。
  * 遵循 07 §2.3 纪律：所有 Git 操作统一经过 {@link GitPort}，零直接命令行调用。</p>
  *
+ * <p>ACL 接入（⑥j-A M-b B1 · docs/v2/13 §0.2/§2.2 动作矩阵）：本控制器全部端点带
+ * {@code /repos/{idOrName}} 前缀，走 {@code @RequireRepoPerm} 切面 URI 定位（两路定位器之一）；
+ * 动作映射——建仓为平台级动作维持 platform:manage（§3.1 分轨：一个端点只走一条链），
+ * GET 读端点（detail/branches/tags/commits/tree/blob/compare）→ view（§2.2 view 生效点；
+ * blob/compare 的 pull 语义与 view 同角色档，按批口径统一取 view），
+ * POST branches → create-branch，DELETE branches/{*name} → delete-branch，
+ * POST cherry-pick → push（API 侧直写），错误码口径：能力缺失 403 T1-PLT-4030、
+ * 治理拦截维持 422（ENG_4255 等，§3.3）。</p>
+ *
  * @author Ivan Yang, 2026-09-13
  */
 @RestController
@@ -59,19 +71,19 @@ public class RepositoryController {
     private final BranchProtectionService branchProtectionService;
     private final BranchRuleService branchRuleService;
     private final RepositoryProvisionService provisionService;
-    private final RepoAclService repoAcl;
+    private final RepoPermChecker permChecker;
 
     public RepositoryController(RepositoryRepository repositoryRepository, GitPort gitPort,
                                 BranchProtectionService branchProtectionService,
                                 BranchRuleService branchRuleService,
                                 RepositoryProvisionService provisionService,
-                                RepoAclService repoAcl) {
+                                RepoPermChecker permChecker) {
         this.repositoryRepository = repositoryRepository;
         this.gitPort = gitPort;
         this.branchProtectionService = branchProtectionService;
         this.branchRuleService = branchRuleService;
         this.provisionService = provisionService;
-        this.repoAcl = repoAcl;
+        this.permChecker = permChecker;
     }
 
     /**
@@ -102,21 +114,15 @@ public class RepositoryController {
      * 方法内结果集过滤——PRIVATE 仓仅对「命中 repo_member 的用户 + 平台 OWNER/ADMIN」可见，
      * INTERNAL/PUBLIC 全员可见。现网种子仓全 INTERNAL，过滤前后结果等价（零收紧验收；
      * 唯一可见变化 = PRIVATE 过滤能力的就位）。切面 {@code @RequireRepoPerm} 对无 idOrName
-     * 的列表路径不做逐仓断言（{@code RequireRepoPermAspect} 约定），标注仅为端点 ACL 声明。</p>
+     * 的列表路径不做逐仓断言（{@code RequireRepoPermAspect} 约定），标注仅为端点 ACL 声明。
+     * M-b：过滤逻辑抽 {@link RepoPermChecker#filterVisible} 公共方法（B4 跨仓列表复用）。</p>
      */
     @GetMapping
     @RequireRepoPerm(action = RepoActions.VIEW)
     public Map<String, Object> listRepos(@AuthenticationPrincipal AppUser me) {
         List<Repository> repos = repositoryRepository.findAll();
-        boolean platformAdmin = me != null && (me.getPlatformRole() == AppUser.PlatformRole.OWNER
-                || me.getPlatformRole() == AppUser.PlatformRole.ADMIN);
         // PRIVATE 过滤：非平台管理员且 visibility=private 时，须五步链 view 判定命中才可见
-        List<Repository> visible = (platformAdmin || me == null)
-                ? repos
-                : repos.stream()
-                        .filter(r -> !"PRIVATE".equalsIgnoreCase(r.getVisibility())
-                                || repoAcl.checkRepoPerm(me.getId(), r.getId(), RepoActions.VIEW))
-                        .toList();
+        List<Repository> visible = permChecker.filterVisible(me, repos);
         List<Map<String, Object>> items = new ArrayList<>(visible.size());
         for (Repository r : visible) {
             Map<String, Object> item = toRepoMap(r);
@@ -140,8 +146,11 @@ public class RepositoryController {
 
     /**
      * 仓库详情（支持 UUID 或仓库名查询）。
+     *
+     * <p>ACL（M-b B1）：view（§2.2「仓库可见：详情…可读」；PRIVATE 无条目 403，§5.2）。</p>
      */
     @GetMapping("/{idOrName}")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public Map<String, Object> getRepo(@PathVariable String idOrName) {
         Repository repo = findRepo(idOrName);
         Map<String, Object> res = toRepoMap(repo);
@@ -167,8 +176,11 @@ public class RepositoryController {
 
     /**
      * 分支列表。
+     *
+     * <p>ACL（M-b B1）：view（§2.2 view 生效点「GET /repos/** 全读端点」）。</p>
      */
     @GetMapping("/{idOrName}/branches")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public List<GitBranch> getBranches(@PathVariable String idOrName) {
         Repository repo = findRepo(idOrName);
         return gitPort.branches(repo.getRepoPath());
@@ -176,8 +188,12 @@ public class RepositoryController {
 
     /**
      * 创建分支（startRef 省略=默认分支头；已存在 409）。
+     *
+     * <p>ACL（M-b B1）：create-branch（§2.2；能力矩阵 Developer+，Reporter 403 能力缺失，
+     * 名称治理仍走既有 422 ENG_4255——能力与治理两道独立判定，§3.3）。</p>
      */
     @PostMapping("/{idOrName}/branches")
+    @RequireRepoPerm(action = RepoActions.CREATE_BRANCH)
     public Map<String, Object> createBranch(
             @PathVariable String idOrName,
             @RequestBody CreateBranchRequest req) {
@@ -207,8 +223,12 @@ public class RepositoryController {
      * 删除分支（branch_protection 命中的受保护分支 409；成功 204）。
      * {*name}：分支名常含斜杠（feature/x），PathPattern 单段变量吃不掉，须捕获剩余路径
      * （捕获值带前导 "/"，下方归一化剥掉）。
+     *
+     * <p>ACL（M-b B1）：delete-branch（§2.2 删非保护分支，能力矩阵仅 Maintainer+——
+     * Developer 不可删为 Q7 保守值；受保护拦截仍走既有 409，§3.3 叠加示例「能力优先于治理提示」）。</p>
      */
     @DeleteMapping("/{idOrName}/branches/{*name}")
+    @RequireRepoPerm(action = RepoActions.DELETE_BRANCH)
     public ResponseEntity<Void> deleteBranch(
             @PathVariable String idOrName,
             @PathVariable String name) {
@@ -229,8 +249,11 @@ public class RepositoryController {
 
     /**
      * Tag 列表。
+     *
+     * <p>ACL（M-b B1）：view（§2.2 view 生效点）。</p>
      */
     @GetMapping("/{idOrName}/tags")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public List<GitTag> getTags(@PathVariable String idOrName) {
         Repository repo = findRepo(idOrName);
         return gitPort.tags(repo.getRepoPath());
@@ -238,8 +261,11 @@ public class RepositoryController {
 
     /**
      * 提交历史分页（按时间倒序）。
+     *
+     * <p>ACL（M-b B1）：view（§2.2 view 生效点；§5.2 单仓读端点「无 view → 403」）。</p>
      */
     @GetMapping("/{idOrName}/commits")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public Map<String, Object> getCommits(
             @PathVariable String idOrName,
             @RequestParam(required = false) String ref,
@@ -263,8 +289,11 @@ public class RepositoryController {
 
     /**
      * 目录树（文件与子目录）。
+     *
+     * <p>ACL（M-b B1）：view（§2.2 view 生效点）。</p>
      */
     @GetMapping("/{idOrName}/tree")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public Map<String, Object> getTree(
             @PathVariable String idOrName,
             @RequestParam(required = false) String ref,
@@ -283,8 +312,12 @@ public class RepositoryController {
 
     /**
      * 文件内容读取。
+     *
+     * <p>ACL（M-b B1）：view（§2.2 中 blob 属 pull 生效面「平台内 blob/compare」，pull 与 view
+     * 在四级角色矩阵逐格同档（全角色 ✓），按批口径统一取 view，注明差异无行为影响）。</p>
      */
     @GetMapping("/{idOrName}/blob")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public GitBlob getBlob(
             @PathVariable String idOrName,
             @RequestParam(required = false) String ref,
@@ -296,8 +329,11 @@ public class RepositoryController {
 
     /**
      * 对比两分支/Ref（U5）：输出公共基点、提交列表、三路 diff 与可合并性。
+     *
+     * <p>ACL（M-b B1）：view（§2.2 pull 生效面「平台内 blob/compare」，与 view 同档，取 view）。</p>
      */
     @GetMapping("/{idOrName}/compare")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public cn.teamone.eng.infra.git.GitCompareResult compare(
             @PathVariable String idOrName,
             @RequestParam(required = false) String target,
@@ -313,8 +349,12 @@ public class RepositoryController {
      *
      * <p>入参经 GitPort 白名单校验（commitSha 须 40 位小写 hex）；目标分支不存在 404；
      * 存在冲突抛 ENG_4251（422，附冲突文件清单）。实现走临时 worktree（详见 GitCommandPort）。</p>
+     *
+     * <p>ACL（M-b B1）：push（§2.2「直推非保护分支（API 侧：cherry-pick 直写）」，
+     * Developer+；受保护分支治理拦截仍走既有 409，§3.3 AND 叠加）。</p>
      */
     @PostMapping("/{idOrName}/cherry-pick")
+    @RequireRepoPerm(action = RepoActions.PUSH)
     public Map<String, Object> cherryPick(
             @PathVariable String idOrName,
             @RequestBody CherryPickRequest req) {
@@ -335,6 +375,43 @@ public class RepositoryController {
         res.put("commitSha", newSha);
         res.put("branch", req.targetBranch().trim());
         return res;
+    }
+
+    /**
+     * 我在本仓库的权限能力位（⑥j-A M-b · docs/v2/13 §4.5，前端按钮渲染数据源）。
+     *
+     * <p>契约（与并行前端批严格一致）：
+     * {@code 200 {"role":"owner|maintainer|developer|reporter|null","capabilities":[...]}}
+     * —— 登录态即可调（查自己，不要求对仓库有任何角色，故<b>不挂</b> {@code @RequireRepoPerm}：
+     * PRIVATE 仓无条目者得到 200 + role=null + 空 capabilities，而非 403，同 GitLab 语义）；
+     * 平台 OWNER/ADMIN 短路时返回 {@code "role":"owner"} + 全量能力并加
+     * {@code "platformAdmin":true}（role 恒出现：DTO 钉 ALWAYS，见
+     * {@link MyRepoPermissionsResponse}）。</p>
+     *
+     * <p>capabilities = 该用户在本仓的实际放行动作集合：对 {@link cn.teamone.platform.authz.RepoActions#ALL}
+     * 14 动作逐个走五步链（含 DENY、visibility 只读兜底与平台短路；实现取舍二选一取「逐动作走链」，
+     * 保证与后端放行同源一致——§5.2「前端不渲染 = 后端必 403」的根基）；目录声明序输出。
+     * 无条目 + INTERNAL 仓 = [view]（M-a 链内口径：visibility 兜底仅 view）。</p>
+     */
+    @GetMapping("/{idOrName}/me/permissions")
+    public MyRepoPermissionsResponse myPermissions(
+            @PathVariable String idOrName,
+            @AuthenticationPrincipal AppUser me) {
+        // 查自己：登录态即可（/api/** 已 authenticated；此显式 401 为防御分支，不留系统兜底口子）
+        if (me == null) {
+            throw new PermissionDeniedException(ErrorCode.PLT_4010, "未认证或凭证已失效", null);
+        }
+        Repository repo = findRepo(idOrName);
+        RepoRole role = permChecker.effectiveRoleOf(me.getId(), repo.getId());
+        List<String> capabilities = permChecker.capabilitiesOf(me.getId(), repo.getId());
+        Boolean platformAdmin = null;
+        if (role == RepoRole.OWNER
+                && (me.getPlatformRole() == AppUser.PlatformRole.OWNER
+                        || me.getPlatformRole() == AppUser.PlatformRole.ADMIN)) {
+            // 平台管理员短路标记（契约：仅平台 OWNER/ADMIN 时输出；capabilities 走链自然全量）
+            platformAdmin = Boolean.TRUE;
+        }
+        return new MyRepoPermissionsResponse(role == null ? null : role.wire(), capabilities, platformAdmin);
     }
 
     private Repository findRepo(String idOrName) {

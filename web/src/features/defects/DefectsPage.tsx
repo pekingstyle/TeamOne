@@ -326,9 +326,11 @@ function DefectRow({ d, nav, onOpen, users, releases }: {
   const stale = daysSince(d.updatedAt)
   const br = d.blockedReleaseId
   const rel = br // 远端版本 id（uuid），DeliveryPage 按版本 id 定位卡片
-  // PM-9：行内版本位不再渲染 work_item.version（JPA 乐观锁版本，与业务版本无关），
-  // 改经 blockedReleaseId → releases 查真实版本名（如 v2.5.0 平台化与体验迭代），过长 truncate
-  const relName = br ? releases.find((r) => r.id === br)?.name : undefined
+  // 挂账收口（缺陷所属版本）：行版本列优先所属/交付版本（work_item.release_id → 名称），
+  // 无所属版本回退阻塞版本（原 PM-9 逻辑）；两者都有时显示所属版本名，
+  // 「阻塞」语义仍由行尾 Package 徽标按钮（下方，不动）表达
+  const ownRelName = d.releaseId ? releases.find((r) => r.id === d.releaseId)?.name : undefined
+  const relName = ownRelName ?? (br ? releases.find((r) => r.id === br)?.name : undefined)
   return (
     <div className="flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 hover:bg-ink-700" onClick={onOpen}>
       <Pill tone={severityTone[d.severity]}>{d.severity}</Pill>

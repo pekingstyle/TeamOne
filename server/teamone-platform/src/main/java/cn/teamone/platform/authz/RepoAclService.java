@@ -130,4 +130,85 @@ public class RepoAclService {
                     List.of("action=" + action, "repoId=" + repoId));
         }
     }
+
+    // ==================== M-b 扩展（⑥j-A · docs/v2/13 §2.4 派生口径 / §4.5 能力位） ====================
+
+    /**
+     * 角色下限判定（「Maintainer+」这类角色门槛派生口径，§2.4：MR close/reopen、单测豁免）。
+     *
+     * <p>实现等价性：{@link RepoRole} 四级能力集严格嵌套（owner ⊇ maintainer ⊇ developer ⊇ reporter，
+     * 枚举按档构造保证），故「角色 ≥ floor」⟺「具备 floor 档新增的探测动作」——探测动作复用
+     * {@link #checkRepoPerm} 的五步链与决策缓存（同动作同键，无额外缓存面）；平台 OWNER/ADMIN
+     * 短路与 DENY 优先语义与动作判定完全一致。</p>
+     *
+     * @param userId 用户 id
+     * @param repoId 仓库 id
+     * @param floor  角色下限（如 {@code RepoRole.MAINTAINER}）
+     * @return 角色是否达到下限
+     */
+    public boolean checkRoleAtLeast(UUID userId, UUID repoId, RepoRole floor) {
+        return checkRepoPerm(userId, repoId, probeActionOf(floor));
+    }
+
+    /** 角色下限断言（不达即 403 T1-PLT-4030）：scene 为业务场景文案（如「关闭评审」「单测豁免」） */
+    public void requireRoleAtLeast(UUID userId, UUID repoId, RepoRole floor, String scene) {
+        if (!checkRoleAtLeast(userId, repoId, floor)) {
+            throw new PermissionDeniedException(
+                    ErrorCode.PLT_4030,
+                    "无权限：" + scene + "需仓库 " + floor.wire() + " 及以上角色（或平台管理员）",
+                    List.of("roleFloor=" + floor.wire(), "repoId=" + repoId));
+        }
+    }
+
+    /** floor 档新增的探测动作（见 {@link #checkRoleAtLeast} 等价性说明） */
+    private static String probeActionOf(RepoRole floor) {
+        return switch (floor) {
+            case REPORTER -> RepoActions.VIEW;               // 全角色共有
+            case DEVELOPER -> RepoActions.PUSH;              // Developer 档新增
+            case MAINTAINER -> RepoActions.MANAGE_PROTECTION; // Maintainer 档新增
+            case OWNER -> RepoActions.MANAGE_SETTINGS;       // Owner 档独占
+        };
+    }
+
+    /**
+     * 我在仓库的有效角色（§4.5 能力位查询接口数据源）：repo_member 最高 ALLOW 角色；
+     * 平台 OWNER/ADMIN 短路返回 {@code OWNER}（每仓库隐式能力全集，§3.1）；
+     * 无条目 / 非 ACTIVE / DENY 命中返回 {@code null}（仅剩 visibility 兜底只读）。
+     */
+    public RepoRole effectiveRoleOf(UUID userId, UUID repoId) {
+        AppUser user = users.findById(userId).orElse(null);
+        if (user == null || user.getStatus() != AppUser.Status.ACTIVE) {
+            return null;
+        }
+        if (user.getPlatformRole() == AppUser.PlatformRole.OWNER
+                || user.getPlatformRole() == AppUser.PlatformRole.ADMIN) {
+            return RepoRole.OWNER;
+        }
+        List<RepoMember> mine = members.findByRepoId(repoId).stream()
+                .filter(m -> userId.equals(m.getSubjectUserId()))
+                .toList();
+        if (mine.stream().anyMatch(m -> m.getEffect() == Effect.DENY)) {
+            return null;
+        }
+        return mine.stream()
+                .filter(m -> m.getEffect() == Effect.ALLOW)
+                .map(RepoMember::getRole)
+                .max(java.util.Comparator.comparingInt(RepoRole::ordinal))
+                .orElse(null);
+    }
+
+    /**
+     * 我在仓库的实际放行动作集合（me/permissions 契约的 capabilities 字段）：
+     * 对 {@link RepoActions#ALL} 14 动作逐个走 {@link #checkRepoPerm}（真相 = 五步链，
+     * 含 DENY、visibility 只读兜底与平台短路；命中走决策缓存）。目录声明序输出。
+     *
+     * <p>实现取舍（契约二选一，取「逐动作走链」）：保证与后端放行 100% 同源一致
+     * （前端「不渲染 = 后端必 403」双向等价的根基，§5.2 原则②）；代价为 14 次链判定
+     * （缓存命中路径 O(1)/动作），UI 拉取频次下可忽略。</p>
+     */
+    public java.util.List<String> capabilitiesOf(UUID userId, UUID repoId) {
+        return RepoActions.ALL.stream()
+                .filter(action -> checkRepoPerm(userId, repoId, action))
+                .toList();
+    }
 }

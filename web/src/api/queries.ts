@@ -30,6 +30,8 @@ export interface RemoteWorkItem {
   reporterId: string
   version: number
   labels: string
+  /** 所属/交付版本（Views.of(WorkItem) 投影 work_item.release_id；与阻塞版本 blockedReleaseId 语义区分） */
+  releaseId?: string
   blockedReleaseId?: string
   /** Views.of(WorkItem) 投影：所属组件 uuid（缺陷分布/抽屉组件名映射用） */
   componentId?: string
@@ -37,6 +39,9 @@ export interface RemoteWorkItem {
   foundInId?: string
   /** Views.of(WorkItem) 投影：关联任务（后端字段名 relatedId → 前端 relatedTaskId） */
   relatedId?: string
+  /** 列表投影：type=requirement 行的拆解任务统计（children 按 parent_id，type∈task/test_task/defect）；无子行 0/0 */
+  taskCount?: number
+  taskDoneCount?: number
   createdAt: string
   updatedAt: string
   path: string
@@ -45,7 +50,7 @@ export interface RemoteWorkItem {
 interface PagePayload<T> { items: T[]; page: number; size: number; total: number }
 
 /** 后端条目 → 前端 Defect 展示形（+version 乐观锁；缺失字段安全兜底，纯展示函数仍走 store.ts） */
-export type DefectRow = Defect & { version: number }
+export type DefectRow = Defect & { version: number; releaseId?: string }
 export function remoteToDefect(raw: RemoteWorkItem): DefectRow {
   let labels: string[] = []
   try { labels = JSON.parse(raw.labels ?? '[]') as string[] } catch { /* labels 非法时按空处理 */ }
@@ -66,6 +71,8 @@ export function remoteToDefect(raw: RemoteWorkItem): DefectRow {
     points: 0,
     labels,
     blockedReleaseId: raw.blockedReleaseId,
+    // 所属/交付版本（work_item.release_id，与阻塞版本 blockedReleaseId 区分；行版本列优先展示）
+    releaseId: raw.releaseId,
     // 收口批（D-91 后字段映射真实化）：Views.of(WorkItem) 已投影 componentId/foundInId/relatedId
     componentId: raw.componentId,
     foundInTestTaskId: raw.foundInId,
@@ -1103,6 +1110,36 @@ export const repoMembersApi = {
       method: 'DELETE',
     })
   },
+}
+
+// ---------------- 我的能力位（ACL · docs/v2/13 §4.5：前端按钮显隐数据源） ----------------
+
+/** GET /repos/{idOrName}/me/permissions 响应（契约字段；capabilities 如 view/pull/push/create-branch/...） */
+export interface RemoteRepoMyPermissions {
+  /** 当前生效仓库角色（后端 DTO 实名字段 role，QA 复审 MUST-FIX 对齐）；null=无仓库角色（仅 visibility 兜底可读） */
+  role: RepoMemberRole | null
+  /** 能力位清单（逐动作走五步链，与后端放行同源） */
+  capabilities: string[]
+  /** 平台 OWNER/ADMIN 短路标记（仅短路时出现，可缺省） */
+  platformAdmin?: boolean
+}
+
+/**
+ * 我的仓库能力位（GET /repos/{idOrName}/me/permissions，staleTime 30s）。
+ * 消费方约定（docs/v2/13 §5.2 ②）：无能力的按钮不渲染（非置灰）；
+ * 缺省安全——data 未就绪（加载中/端点未部署 404）时按「有能力」渲染，后端 403 兜底不变。
+ */
+export function useRepoMyPermissions(idOrName: string | undefined) {
+  return useQuery({
+    queryKey: ['repo', idOrName, 'my-permissions'],
+    enabled: !!idOrName,
+    staleTime: 30_000,
+    retry: false,
+    queryFn: () =>
+      api<RemoteRepoMyPermissions>(
+        `/api/v1/repos/${encodeURIComponent(idOrName!)}/me/permissions`,
+      ),
+  })
 }
 
 /** cherry-pick 结果（摘取后在目标分支生成的新提交） */

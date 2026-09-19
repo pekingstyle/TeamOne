@@ -3,7 +3,9 @@ package cn.teamone.eng.api;
 import cn.teamone.eng.app.WorktreeReportService;
 import cn.teamone.eng.dto.WorktreeReportRequest;
 import cn.teamone.eng.dto.WorktreeReportResponse;
+import cn.teamone.platform.authz.RepoActions;
 import cn.teamone.platform.domain.AppUser;
+import cn.teamone.shared.auth.RequireRepoPerm;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,6 +20,10 @@ import java.util.UUID;
 
 /**
  * 工作副本 WorkTree REST 控制器（FR-v2-10 / R7 / M2-INC-3 V-16）。
+ *
+ * <p>ACL 接入（⑥j-A M-b B1）：读端点（{@code /repos/{idOrName}/worktrees}）→ view
+ * （§2.4 Worktree 行「读端点 view」）；上报端点维持「登录用户上报本人条目」口径
+ * （§2.4：owner=自己的留痕语义，非仓库角色动作，本批不动）。</p>
  *
  * @author Ivan Yang, 2026-09-13
  */
@@ -37,10 +43,13 @@ public class WorktreeController {
      * 对应前端「代码仓详情 -> 工作树」页面，返回每个本地副本的分支、路径、领先/落后提交数与未提交改动。
      * </p>
      *
+     * <p>ACL（M-b B1）：view（§2.4 Worktree 行读端点口径；切面 URI 定位）。</p>
+     *
      * @param idOrName 仓库 UUID 或仓库名称（如 "teamone"）
      * @return 活跃工作副本列表（按最近一次心跳活跃时间倒序排列）
      */
     @GetMapping("/repos/{idOrName}/worktrees")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public List<WorktreeReportResponse> listWorktrees(@PathVariable String idOrName) {
         return worktreeService.listWorktrees(idOrName);
     }

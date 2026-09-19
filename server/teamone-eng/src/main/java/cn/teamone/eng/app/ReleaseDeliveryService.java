@@ -60,6 +60,44 @@ public class ReleaseDeliveryService {
         }
     }
 
+    /**
+     * run→仓库归一（⑥j-A M-b B1 · Q5 裁决口径的数据侧）：release 无直接 repo 外键，
+     * 跨域映射只经 eng 自有表（pipeline_run 已有 release_id + repo_id，§2.4）。
+     *
+     * @param runId 请求携带的流水线运行 id（null → empty）
+     * @return 运行关联仓库 id；运行不存在/未携带 → empty（调用方回退 platform:manage）
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<UUID> repoIdOfPipelineRun(UUID runId) {
+        if (runId == null) {
+            return java.util.Optional.empty();
+        }
+        return pipelineRepo.findById(runId).map(PipelineRun::getRepoId);
+    }
+
+    /**
+     * 部署登记的权限锚仓库（Q5 修正口径，QA 复审 MUST-FIX）：§2.4「release→最近关联 run 的仓」——
+     * 版本已有关联运行时锚点恒取自身运行（请求携带 runId 则须归属本版本，防跨仓挑锚越权写他版部署史）；
+     * 版本尚无关联运行时，请求携带的 runId 即首挂引导（此后锚点回归版本自身）。
+     */
+    public java.util.Optional<UUID> deploymentAnchorRepo(UUID releaseId, UUID requestedRunId) {
+        List<PipelineRun> runs = pipelineRepo.findByReleaseIdOrderByCreatedAtDesc(releaseId);
+        if (!runs.isEmpty()) {
+            if (requestedRunId != null) {
+                PipelineRun req = pipelineRepo.findById(requestedRunId).orElse(null);
+                boolean belongs = req != null && releaseId.equals(req.getReleaseId());
+                if (!belongs) {
+                    throw new cn.teamone.shared.api.BusinessException(
+                            cn.teamone.shared.api.ErrorCode.PLT_4000,
+                            "pipelineRunId 与该版本无关联（部署登记锚点校验）");
+                }
+                return java.util.Optional.of(req.getRepoId());
+            }
+            return java.util.Optional.of(runs.get(0).getRepoId());
+        }
+        return repoIdOfPipelineRun(requestedRunId);
+    }
+
     // ==================== 查询（只读展示闭环） ====================
 
     /**

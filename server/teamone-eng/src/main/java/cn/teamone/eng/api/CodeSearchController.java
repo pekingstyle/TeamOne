@@ -4,6 +4,8 @@ import cn.teamone.eng.domain.Repository;
 import cn.teamone.eng.infra.git.GitPort;
 import cn.teamone.eng.infra.git.GitSearchResult;
 import cn.teamone.eng.repo.RepositoryRepository;
+import cn.teamone.platform.authz.RepoActions;
+import cn.teamone.shared.auth.RequireRepoPerm;
 import cn.teamone.shared.api.BusinessException;
 import cn.teamone.shared.api.ErrorCode;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,6 +22,9 @@ import java.util.UUID;
  * 提供基于自研内核针对指定版本（分支/Tag/Commit）的代码内容级全文检索能力，
  * 支持路径模式过滤与返回行上限控制。
  * </p>
+ *
+ * <p>ACL 接入（⑥j-A M-b B1）：单仓路径 {@code /repos/{idOrName}/search} 走切面 URI 定位
+ * （§4.4 定位器①，v1.0 漏盘由 v1.1 补齐）→ view（§5.2 清单行「无 view → 403（单仓）」）。</p>
  *
  * @author Ivan Yang, 2026-09-13
  */
@@ -38,6 +43,8 @@ public class CodeSearchController {
     /**
      * 在指定仓库的指定版本中全文检索代码关键字（git grep）。
      *
+     * <p>ACL（M-b B1）：view（§5.2 单仓读端点收口）。</p>
+     *
      * @param idOrName 仓库 ID (UUID) 或仓库名称（如 "teamone"）
      * @param q        检索关键词（至少 2 个字符）
      * @param ref      分支名称、Tag 或 Commit SHA（缺省为仓库主分支）
@@ -46,6 +53,7 @@ public class CodeSearchController {
      * @return 结构化的匹配行列表与执行耗时
      */
     @GetMapping("/{idOrName}/search")
+    @RequireRepoPerm(action = RepoActions.VIEW)
     public GitSearchResult searchCode(
             @PathVariable String idOrName,
             @RequestParam String q,

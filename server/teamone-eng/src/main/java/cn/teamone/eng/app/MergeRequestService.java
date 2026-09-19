@@ -21,10 +21,11 @@ import cn.teamone.eng.repo.MergeRequestRepository;
 import cn.teamone.eng.repo.MergeReviewerRepository;
 import cn.teamone.eng.repo.RepositoryRepository;
 import cn.teamone.platform.audit.AuditService;
-import cn.teamone.platform.authz.PermissionService;
+import cn.teamone.platform.authz.RepoActions;
+import cn.teamone.platform.authz.RepoRole;
+import cn.teamone.platform.domain.AppUser;
 import cn.teamone.shared.api.BusinessException;
 import cn.teamone.shared.api.ErrorCode;
-import cn.teamone.shared.api.PermissionDeniedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -47,6 +48,10 @@ import java.util.UUID;
 /**
  * MR 业务应用服务（M2-INC-3 U5~U7：会签状态机、单测门禁判定与原生服务端合并）。
  *
+ * <p>ACL（⑥j-A M-b B3/B4 · docs/v2/13 §2.4/§5.2）：close/reopen 服务层断言改为
+ * 「MR 作者 ∨ 仓库 Maintainer+ ∨ 平台管理员」（平台管理员由仓库链第 1 步短路）；
+ * listMrs 跨仓列表对 PRIVATE 仓 MR 逐仓 view 剔除（结果集过滤，不整单 403）。</p>
+ *
  * @author Ivan Yang, 2026-09-13
  */
 @Service
@@ -67,7 +72,7 @@ public class MergeRequestService {
     private final BranchRuleService branchRuleService;
     private final GitPort gitPort;
     private final AuditService audit;
-    private final PermissionService permissions;
+    private final RepoPermChecker permChecker;
 
     /** 单测门禁双阈值（teamone.mr.gate.total-coverage / patch-coverage，默认 60/80） */
     private final double totalCoverageGate;
@@ -84,7 +89,7 @@ public class MergeRequestService {
             BranchRuleService branchRuleService,
             GitPort gitPort,
             AuditService audit,
-            PermissionService permissions,
+            RepoPermChecker permChecker,
             @Value("${teamone.mr.gate.total-coverage:60}") double totalCoverageGate,
             @Value("${teamone.mr.gate.patch-coverage:80}") double patchCoverageGate) {
         this.mrRepo = mrRepo;
@@ -97,7 +102,7 @@ public class MergeRequestService {
         this.branchRuleService = branchRuleService;
         this.gitPort = gitPort;
         this.audit = audit;
-        this.permissions = permissions;
+        this.permChecker = permChecker;
         this.totalCoverageGate = totalCoverageGate;
         this.patchCoverageGate = patchCoverageGate;
     }
@@ -114,6 +119,21 @@ public class MergeRequestService {
             return repositoryRepo.findByName(idOrName.trim())
                     .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "仓库不存在: " + idOrName));
         }
+    }
+
+    /**
+     * MR→所属仓库解析（⑥j-A M-b B1 服务层回退定位：无 /repos 前缀端点
+     * {@code /mrs/{id}/**} 经 MR 行归一 repoId，§2.1「目标仓库优先」）。
+     *
+     * @param mrId MR UUID
+     * @return 所属仓库 id（永不为 null）
+     * @throws BusinessException MR 不存在时 404
+     */
+    @Transactional(readOnly = true)
+    public UUID repoIdOf(UUID mrId) {
+        return mrRepo.findById(mrId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "MR 不存在: " + mrId))
+                .getRepoId();
     }
 
     @Transactional
@@ -209,8 +229,24 @@ public class MergeRequestService {
         return toDetailResponse(mr, repo, true);
     }
 
+    /**
+     * MR 列表（跨仓/按仓过滤，含 B4 PRIVATE 结果集过滤）。
+     *
+     * <p>ACL（⑥j-A M-b B4 · §5.2 清单行「GET /mrs 跨仓列表：按仓库可见性过滤结果集——
+     * 无 view 的仓 MR 元数据不返回」）：repoId 去重后逐仓 view 判定；平台管理员整体跳过；
+     * me=null 为防御分支不过滤（/api/** 已 authenticated）。指定仓库形态的 view 断言由
+     * 控制器 {@code GET /repos/{repoId}/mrs} 切面完成，本方法内过滤对单仓形态天然幂等。
+     * 简化口径（挂账）：剔除不重分页，total 按剔除数等量下调；精确分页需查询侧 join
+     * 可见性，v2.1 评估。现网无 PRIVATE 数据 = 行为零变化。</p>
+     *
+     * @param me          当前登录用户（过滤判定主体，可空）
+     * @param repoIdOrName 可选仓库过滤（UUID 或名称）
+     * @param status      可选状态过滤
+     * @param page        页码（从 1 起）
+     * @param size        页大小
+     */
     @Transactional(readOnly = true)
-    public Page<MrDetailResponse> listMrs(String repoIdOrName, String status, int page, int size) {
+    public Page<MrDetailResponse> listMrs(AppUser me, String repoIdOrName, String status, int page, int size) {
         UUID repoId = null;
         if (repoIdOrName != null && !repoIdOrName.isBlank()) {
             try {
@@ -231,11 +267,32 @@ public class MergeRequestService {
             mrs = mrRepo.findAll(pageable);
         }
 
+        // B4：无 view 仓库集合（repoId 去重判定）
+        java.util.Set<UUID> hiddenRepos = new java.util.HashSet<>();
+        if (me != null && !RepoPermChecker.isPlatformAdmin(me)) {
+            for (MergeRequest m : mrs.getContent()) {
+                if (!hiddenRepos.contains(m.getRepoId())
+                        && !permChecker.check(me.getId(), m.getRepoId(), RepoActions.VIEW)) {
+                    hiddenRepos.add(m.getRepoId());
+                }
+            }
+        }
+
         Map<UUID, Repository> repoCache = new HashMap<>();
-        return mrs.map(m -> {
+        List<MrDetailResponse> visible = new java.util.ArrayList<>(mrs.getContent().size());
+        for (MergeRequest m : mrs.getContent()) {
+            if (hiddenRepos.contains(m.getRepoId())) {
+                continue;
+            }
             Repository r = repoCache.computeIfAbsent(m.getRepoId(), id -> repositoryRepo.findById(id).orElse(null));
-            return toDetailResponse(m, r, false);
-        });
+            visible.add(toDetailResponse(m, r, false));
+        }
+        if (visible.size() == mrs.getContent().size()) {
+            return new org.springframework.data.domain.PageImpl<>(visible, pageable, mrs.getTotalElements());
+        }
+        // 简化口径：total 等量下调（本页剔除数），不重取页
+        return new org.springframework.data.domain.PageImpl<>(visible, pageable,
+                mrs.getTotalElements() - (mrs.getContent().size() - visible.size()));
     }
 
     @Transactional(readOnly = true)
@@ -258,14 +315,16 @@ public class MergeRequestService {
     /**
      * 关闭评审（⑥h 评审生命周期补全）：draft|open → closed，写系统评论与审计。
      *
-     * <p>权限：仅 MR 作者本人或平台管理员（OWNER/ADMIN 短路，platform:manage 同族）；
-     * merged/closed 等非法迁移抛 PLT_4000（4xx）。</p>
+     * <p>ACL（⑥j-A M-b B3 · §2.4「MR close/reopen」行）：「MR 作者本人 ∨ 仓库 Maintainer+
+     * ∨ 平台管理员」——替换原「作者 ∨ platform:manage」口径（行为兼容：平台 OWNER/ADMIN
+     * 由仓库判定链第 1 步短路放行，仍覆盖原管理员动线）；merged/closed 等非法迁移抛
+     * PLT_4000（4xx）。</p>
      */
     @Transactional
     public MrDetailResponse closeMr(UUID mrId, UUID userId) {
         MergeRequest mr = mrRepo.findById(mrId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "MR 不存在: " + mrId));
-        assertManageableByAuthorOrAdmin(mr, userId, "关闭");
+        assertManageableByAuthorOrMaintainer(mr, userId, "关闭");
         if (!"open".equals(mr.getStatus()) && !"draft".equals(mr.getStatus())) {
             // 非法状态迁移（merged 已合并 / closed 已关闭）按 4xx 快速失败
             throw new BusinessException(ErrorCode.PLT_4000, "MR 当前状态不可关闭: " + mr.getStatus());
@@ -277,7 +336,7 @@ public class MergeRequestService {
         mr.setUpdatedAt(now);
         mrRepo.save(mr);
 
-        addSystemComment(mrId, userId, "【关闭评审】MR 已" + (isAuthor(mr, userId) ? "由作者" : "由管理员") + "关闭，评审流程终止。");
+        addSystemComment(mrId, userId, "【关闭评审】MR 已" + (isAuthor(mr, userId) ? "由作者" : "由仓库维护者或管理员") + "关闭，评审流程终止。");
         audit.record(userId, "mr.close", "mr", mrId.toString(), auditDetail(mr));
         return toDetailResponse(mr, repositoryRepo.findById(mr.getRepoId()).orElse(null), false);
     }
@@ -285,13 +344,14 @@ public class MergeRequestService {
     /**
      * 重开评审（⑥h 评审生命周期补全）：closed → open，写系统评论与审计。
      *
-     * <p>权限口径与关闭一致；merged 不可重开（已合并单据为不可逆终态，仅可另起新 MR）。</p>
+     * <p>ACL（M-b B3）：口径与关闭一致（作者 ∨ Maintainer+ ∨ 平台管理员）；merged 不可重开
+     * （已合并单据为不可逆终态，仅可另起新 MR）。</p>
      */
     @Transactional
     public MrDetailResponse reopenMr(UUID mrId, UUID userId) {
         MergeRequest mr = mrRepo.findById(mrId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "MR 不存在: " + mrId));
-        assertManageableByAuthorOrAdmin(mr, userId, "重开");
+        assertManageableByAuthorOrMaintainer(mr, userId, "重开");
         if (!"closed".equals(mr.getStatus())) {
             if ("merged".equals(mr.getStatus())) {
                 throw new BusinessException(ErrorCode.PLT_4000, "MR 已合并，不可重开");
@@ -309,16 +369,15 @@ public class MergeRequestService {
         return toDetailResponse(mr, repositoryRepo.findById(mr.getRepoId()).orElse(null), false);
     }
 
-    /** 关闭/重开权限：MR 作者本人，或平台管理员（OWNER/ADMIN 短路，platform:manage 同族） */
-    private void assertManageableByAuthorOrAdmin(MergeRequest mr, UUID userId, String action) {
+    /**
+     * 关闭/重开权限（M-b B3 新口径，§2.4）：MR 作者本人短路在前 → 仓库 Maintainer+（角色下限，
+     * 平台 OWNER/ADMIN 由仓库链第 1 步短路放行）。
+     */
+    private void assertManageableByAuthorOrMaintainer(MergeRequest mr, UUID userId, String action) {
         if (isAuthor(mr, userId)) {
             return;
         }
-        boolean admin = permissions.check(userId, "platform", PermissionService.PLATFORM_RESOURCE_ID, "platform:manage");
-        if (!admin) {
-            throw new PermissionDeniedException(ErrorCode.PLT_4030,
-                    "仅 MR 作者或管理员可" + action + "评审", List.of("mr=!" + mr.getMrNumber()));
-        }
+        permChecker.requireRoleAtLeast(userId, mr.getRepoId(), RepoRole.MAINTAINER, action + "评审");
     }
 
     private static boolean isAuthor(MergeRequest mr, UUID userId) {

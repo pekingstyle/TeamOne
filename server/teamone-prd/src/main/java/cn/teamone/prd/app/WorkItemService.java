@@ -4,6 +4,7 @@ import cn.teamone.prd.domain.Component;
 import cn.teamone.prd.domain.Release;
 import cn.teamone.prd.domain.RoadmapItem;
 import cn.teamone.prd.domain.WorkItem;
+import cn.teamone.prd.repo.ChildCountView;
 import cn.teamone.prd.repo.WorkItemRepository;
 import cn.teamone.platform.authz.PermissionService;
 import cn.teamone.platform.infra.IdempotencyService;
@@ -22,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -255,7 +257,18 @@ public class WorkItemService {
             return cb.and(ps.toArray(new Predicate[0]));
         };
         Page<WorkItem> result = workItems.findAll(spec, pageable);
-        List<Map<String, Object>> items = result.map(Views::of).getContent();
+        List<WorkItem> rows = result.getContent();
+        Map<UUID, ChildCountView> childStats = requirementChildStats(rows);
+        List<Map<String, Object>> items = new ArrayList<>(rows.size());
+        for (WorkItem wi : rows) {
+            Map<String, Object> view = Views.of(wi);
+            if (WorkItem.TYPE_REQUIREMENT.equals(wi.getType())) {
+                ChildCountView stat = childStats.get(wi.getId());
+                view.put("taskCount", stat == null ? 0L : stat.getTaskCount());
+                view.put("taskDoneCount", stat == null ? 0L : stat.getTaskDoneCount());
+            }
+            items.add(view);
+        }
         return Map.of("total", result.getTotalElements(), "page", page, "size", safeSize, "items", items);
     }
 
@@ -362,6 +375,26 @@ public class WorkItemService {
     }
 
     // ==================== 内部 ====================
+
+    /**
+     * 列表 requirement 行的拆解任务统计（一次 IN 聚合防 N+1，列表 size≤200）：
+     * children 按 parent_id、type ∈ task/test_task/defect，done 口径与
+     * {@link WorkItem#doneStatusesOf} 同源；无 requirement 行时零查询直返空表。
+     */
+    private Map<UUID, ChildCountView> requirementChildStats(List<WorkItem> rows) {
+        List<UUID> requirementIds = rows.stream()
+                .filter(wi -> WorkItem.TYPE_REQUIREMENT.equals(wi.getType()))
+                .map(WorkItem::getId)
+                .toList();
+        if (requirementIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, ChildCountView> byParent = new HashMap<>();
+        for (ChildCountView v : workItems.childStatsByParentIds(requirementIds)) {
+            byParent.put(v.getParentId(), v);
+        }
+        return byParent;
+    }
 
     private void validateTypeAndSeverity(String type, String severity) {
         if (type == null || !TYPES.contains(type)) {

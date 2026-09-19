@@ -2,6 +2,7 @@ package cn.teamone.platform.authz;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -462,5 +463,81 @@ class RepoAclServiceTest {
                 assertThrows(cn.teamone.shared.api.PermissionDeniedException.class,
                         () -> acl.require(USER, REPO, RepoActions.VIEW));
         assertEquals(ErrorCode.PLT_4030, ex.errorCode());
+    }
+
+    // ==================== M-b（⑥j-A）：角色下限（§2.4「Maintainer+」派生口径） ====================
+
+    @Test
+    void roleFloor_maintainer_plus_only_and_platform_short_circuit() {
+        // Reporter/Developer 低于 Maintainer 档 → 拒；Maintainer/Owner → 过（PRIVATE 仓排除 visibility 干扰）
+        acl = new RepoAclService(users, members, visibilityPortOf("PRIVATE"), Optional.empty());
+        stubRows(row(REPO, USER, RepoRole.DEVELOPER, Source.DIRECT, Effect.ALLOW));
+        assertFalse(acl.checkRoleAtLeast(USER, REPO, RepoRole.MAINTAINER));
+        RepoRole[] below = { RepoRole.REPORTER, RepoRole.DEVELOPER };
+        for (RepoRole r : below) {
+            stubRows(row(REPO, USER, r, Source.DIRECT, Effect.ALLOW));
+            assertFalse(acl.checkRoleAtLeast(USER, REPO, RepoRole.MAINTAINER), r.name());
+        }
+        stubRows(row(REPO, USER, RepoRole.MAINTAINER, Source.DIRECT, Effect.ALLOW));
+        assertTrue(acl.checkRoleAtLeast(USER, REPO, RepoRole.MAINTAINER));
+        stubRows(row(REPO, USER, RepoRole.OWNER, Source.INHERITED, Effect.ALLOW));
+        assertTrue(acl.checkRoleAtLeast(USER, REPO, RepoRole.MAINTAINER));
+        // 平台 OWNER/ADMIN 无行也过（链第 1 步短路——原「作者∨管理员」动线的行为兼容根基）
+        stubRows();
+        when(users.findById(ADMIN_ID))
+                .thenReturn(Optional.of(platformUser(ADMIN_ID, AppUser.PlatformRole.ADMIN)));
+        assertTrue(acl.checkRoleAtLeast(ADMIN_ID, REPO, RepoRole.MAINTAINER));
+        // DENY 命中：即使角色行是 Owner 也不达下限（deny 优先）
+        stubRows(row(REPO, USER, RepoRole.OWNER, Source.INHERITED, Effect.DENY));
+        assertFalse(acl.checkRoleAtLeast(USER, REPO, RepoRole.MAINTAINER));
+    }
+
+    @Test
+    void roleFloor_require_throws_403() {
+        stubRows(row(REPO, USER, RepoRole.DEVELOPER, Source.DIRECT, Effect.ALLOW));
+        acl = new RepoAclService(users, members, visibilityPortOf("PRIVATE"), Optional.empty());
+        cn.teamone.shared.api.PermissionDeniedException ex =
+                assertThrows(cn.teamone.shared.api.PermissionDeniedException.class,
+                        () -> acl.requireRoleAtLeast(USER, REPO, RepoRole.MAINTAINER, "关闭评审"));
+        assertEquals(ErrorCode.PLT_4030, ex.errorCode());
+        assertTrue(ex.getMessage().contains("maintainer"));
+    }
+
+    // ==================== M-b（⑥j-A）：me/permissions 数据源（§4.5 契约） ====================
+
+    @Test
+    void effectiveRole_top_allow_role_platform_owner_null_when_none() {
+        // 最高 ALLOW 角色（多行取高）
+        stubRows(row(REPO, USER, RepoRole.REPORTER, Source.DIRECT, Effect.ALLOW),
+                row(REPO, USER, RepoRole.DEVELOPER, Source.GROUP, Effect.ALLOW));
+        assertEquals(RepoRole.DEVELOPER, acl.effectiveRoleOf(USER, REPO));
+        // 无行 → null（仅剩 visibility 兜底只读）
+        stubRows();
+        assertNull(acl.effectiveRoleOf(USER, REPO));
+        // 平台 OWNER/ADMIN → OWNER（隐式能力全集）
+        when(users.findById(ADMIN_ID))
+                .thenReturn(Optional.of(platformUser(ADMIN_ID, AppUser.PlatformRole.ADMIN)));
+        assertEquals(RepoRole.OWNER, acl.effectiveRoleOf(ADMIN_ID, REPO));
+        // DENY 命中 → null（封禁语义：无有效角色）
+        stubRows(row(REPO, USER, RepoRole.MAINTAINER, Source.DIRECT, Effect.DENY));
+        assertNull(acl.effectiveRoleOf(USER, REPO));
+    }
+
+    @Test
+    void capabilitiesOf_walks_chain_per_action() {
+        // Reporter on INTERNAL：角色能力 4 格 + visibility 兜底不新增（view 本就在角色内）→ 恰 4 项
+        stubRows(row(REPO, USER, RepoRole.REPORTER, Source.DIRECT, Effect.ALLOW));
+        assertEquals(List.of(RepoActions.VIEW, RepoActions.PULL, RepoActions.CREATE_MR, RepoActions.REVIEW),
+                acl.capabilitiesOf(USER, REPO));
+        // 陌生用户 on INTERNAL：仅 visibility 兜底 view（M-a 链内口径：兜底只兜 view）
+        stubRows();
+        assertEquals(List.of(RepoActions.VIEW), acl.capabilitiesOf(USER, REPO));
+        // 陌生用户 on PRIVATE：空集（登录可查、全拒绝）
+        acl = new RepoAclService(users, members, visibilityPortOf("PRIVATE"), Optional.empty());
+        assertEquals(List.of(), acl.capabilitiesOf(USER, REPO));
+        // 平台 OWNER：14 动作全量
+        when(users.findById(ADMIN_ID))
+                .thenReturn(Optional.of(platformUser(ADMIN_ID, AppUser.PlatformRole.OWNER)));
+        assertEquals(RepoActions.ALL, acl.capabilitiesOf(ADMIN_ID, REPO));
     }
 }

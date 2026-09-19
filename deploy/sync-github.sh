@@ -33,7 +33,8 @@ echo "[i] 基线: $GH_URL"
 echo "[i] 提取 monorepo 内容: web/ server/ deploy/ .gitattributes + GitHub 版 README（monorepo $("$GIT" -C "$MONO" rev-parse --short HEAD)）"
 # .gitattributes 必须同步：否则镜像侧 checkout 按全局 autocrlf 转 CRLF，
 # 与 monorepo 的 LF（*.sh eol=lf）不一致 → 每次同步都会产生假变更（幂等性破坏）
-"$GIT" -C "$MONO" archive HEAD web server deploy .gitattributes README.github.md README.github.en.md | tar -xf - -C "$TMP"
+# deploy/cds 为 CDS 基准二进制产物（108MB jar/jsa），永不入库（2026-09-17 审计后追加排除）
+"$GIT" -C "$MONO" archive HEAD web server deploy .gitattributes README.github.md README.github.en.md | tar --exclude="deploy/cds" -xf - -C "$TMP"
 mv "$TMP/README.github.md" "$TMP/README.md"
 mv "$TMP/README.github.en.md" "$TMP/README_EN.md"
 

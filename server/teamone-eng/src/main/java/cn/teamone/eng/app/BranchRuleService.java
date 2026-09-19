@@ -102,6 +102,9 @@ public class BranchRuleService {
         Repository repo = findRepo(idOrName);
         List<BranchRuleItem> items = validateRequest(req);
         branchRuleRepo.deleteByRepoId(repo.getId());
+        // 显式 flush：Hibernate 默认 flush 顺序先 INSERT 后 DELETE，同事务「删旧插新」会撞
+        // UNIQUE(repo_id, branch_type)（IT 复跑实证）——强制删除先落库再插入
+        branchRuleRepo.flush();
         List<BranchRuleItem> saved = new ArrayList<>(items.size());
         Instant now = Instant.now();
         for (BranchRuleItem item : items) {

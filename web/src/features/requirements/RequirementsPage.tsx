@@ -52,8 +52,15 @@ export default function RequirementsPage({ nav, id }: PageProps) {
     [remoteRows, patches],
   )
 
-  // 关联任务计数（拆解任务列）：真实任务 GET /work-items?type=task 客户端按 requirementId 归组
-  const tasksQ = useWorkItems('task')
+  // 拆解任务计数（挂账收口）：列表投影 taskCount/taskDoneCount（后端 children 按 parent_id
+  // 一次 IN 聚合，type∈task/test_task/defect，done 口径与 doneStatusesOf 一致）；无数据显 0/0
+  const taskStatsById = useMemo(() => {
+    const m = new Map<string, { taskCount: number; taskDoneCount: number }>()
+    for (const raw of reqQ.data?.items ?? []) {
+      m.set(raw.id, { taskCount: raw.taskCount ?? 0, taskDoneCount: raw.taskDoneCount ?? 0 })
+    }
+    return m
+  }, [reqQ.data])
   const goalQ = useGoals()
   const goalName = (gid?: string) => goalQ.data?.find((g) => g.id === gid)?.name
   const { data: relRows } = useReleases()
@@ -145,7 +152,7 @@ export default function RequirementsPage({ nav, id }: PageProps) {
             </thead>
             <tbody>
               {list.map((r) => {
-                const linked = (tasksQ.data ?? []).filter((t) => t.requirementId === r.id)
+                const stat = taskStatsById.get(r.id)
                 const goalNameText = r.goalId ? goalName(r.goalId) : undefined
                 const expanded = expandedId === r.id
                 const hasRejected = r.reviews.some((v) => v.result === 'rejected')
@@ -175,7 +182,7 @@ export default function RequirementsPage({ nav, id }: PageProps) {
                       <td className="px-3 py-2.5"><div className="flex items-center gap-1.5"><Avatar userId={r.ownerId} size={20} /><span className="text-xs text-txt-mid">{nameOf(r.ownerId)}</span></div></td>
                       <td className="px-3 py-2.5 font-mono text-xs text-cat-teal">{r.releaseId ? (relRows?.find((x) => x.id === r.releaseId)?.name ?? '—') : '—'}</td>
                       <td className="px-3 py-2.5 max-w-32 truncate text-xs text-cat-purple" title={goalNameText}>{goalNameText ?? '—'}</td>
-                      <td className="px-3 py-2.5 text-xs tabular-nums text-txt-mid">{linked.filter((t) => t.status === 'done' || t.status === 'closed').length}/{linked.length}</td>
+                      <td className="px-3 py-2.5 text-xs tabular-nums text-txt-mid">{stat ? `${stat.taskDoneCount}/${stat.taskCount}` : '0/0'}</td>
                       <td className="px-3 py-2.5 text-xs tabular-nums text-txt-low">{r.updatedAt}</td>
                     </tr>
                     {expanded && (

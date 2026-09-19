@@ -73,6 +73,7 @@ import {
   useRepoWorktrees,
   useRepoBranchRules,
   useRepoMembers,
+  useRepoMyPermissions,
   repoMembersApi,
   baselinesApi,
   branchProtectionsApi,
@@ -162,6 +163,11 @@ export default function RepoDetailPage({ nav, id }: PageProps) {
   const storeRepo = repoId ? repoById(repoId) : undefined
   const { data: remoteRepo, isLoading: isRemoteLoading } = useRepo(repoId)
   const isLive = !!remoteRepo
+  // 能力位显隐（ACL · docs/v2/13 §5.2② · 消费 A 批契约 GET /repos/{idOrName}/me/permissions）：
+  // 无能力的操作按钮不渲染（非禁用，避免误导）；缺省安全——能力位未加载完成/端点未就绪时
+  // 保持现状渲染，后端 403 兜底不变；tab 阅览权对 everyone（view）开放，不做 tab 级隐藏
+  const { data: myPerms } = useRepoMyPermissions(isLive ? remoteRepo.name : undefined)
+  const can = (cap: string) => !myPerms || (myPerms.capabilities ?? []).includes(cap)
 
   const defaultBranch = remoteRepo?.defaultBranch ?? storeRepo?.defaultBranch ?? 'main'
   const [activeBranch, setActiveBranch] = useState<string>(defaultBranch)
@@ -318,6 +324,7 @@ export default function RepoDetailPage({ nav, id }: PageProps) {
           page={commitPage}
           setPage={setCommitPage}
           mockCommits={repoCommits}
+          canCherryPick={can('push')}
         />
       )}
 
@@ -338,6 +345,10 @@ export default function RepoDetailPage({ nav, id }: PageProps) {
           onOpenStrategy={() => setTab('strategy')}
           jumpProt={jumpProt}
           onJumpProtHandled={() => setJumpProt(false)}
+          canCreateBranch={can('create-branch')}
+          canDeleteBranch={can('delete-branch')}
+          canCreateMr={can('create-mr')}
+          canManageProtection={can('manage-protection')}
         />
       )}
 
@@ -353,6 +364,7 @@ export default function RepoDetailPage({ nav, id }: PageProps) {
             setJumpProt(true)
           }}
           onGoMembers={() => setTab('members')}
+          canManageSettings={can('manage-settings')}
         />
       )}
 
@@ -737,6 +749,7 @@ function CommitsTab({
   page,
   setPage,
   mockCommits,
+  canCherryPick,
 }: {
   isLive: boolean
   repoName: string
@@ -744,6 +757,8 @@ function CommitsTab({
   page: number
   setPage: (p: number) => void
   mockCommits: any[]
+  /** 能力位（ACL）：cherry-pick 摘取需 push；无能力隐藏入口（后端 403 兜底） */
+  canCherryPick: boolean
 }) {
   const { data: commitsData, isLoading } = useRepoCommits(
     isLive ? repoName : undefined,
@@ -821,7 +836,7 @@ function CommitsTab({
                 <Badge tone="neutral">{activeBranch}</Badge>
               </div>
             </div>
-            {isLive && (
+            {isLive && canCherryPick && (
               <span title="把该提交摘取到其它分支（如把 main 上的修复摘到 release 分支做回归）" className="flex shrink-0">
                 <Btn variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => setPickCommit(c)}>
                   <Scissors size={12} />摘取
@@ -914,6 +929,10 @@ function BranchesTab({
   onOpenStrategy,
   jumpProt,
   onJumpProtHandled,
+  canCreateBranch,
+  canDeleteBranch,
+  canCreateMr,
+  canManageProtection,
 }: {
   isLive: boolean
   repoName: string
@@ -927,6 +946,11 @@ function BranchesTab({
   /** 「分支策略」页互链信号：为 true 时自动弹出分支保护弹窗 */
   jumpProt: boolean
   onJumpProtHandled: () => void
+  /** 能力位（ACL · docs/v2/13 §2.2）：无能力隐藏操作入口（后端 403 兜底不变） */
+  canCreateBranch: boolean
+  canDeleteBranch: boolean
+  canCreateMr: boolean
+  canManageProtection: boolean
 }) {
   const qc = useQueryClient()
   const { data: branchesData, isLoading } = useRepoBranches(isLive ? repoName : undefined)
@@ -1079,19 +1103,23 @@ function BranchesTab({
           <Btn variant="ghost" className="text-xs px-2.5 py-1" onClick={onOpenStrategy}>
             <GitBranch size={13} />分支策略
           </Btn>
-          <Btn variant="ghost" className="text-xs px-2.5 py-1" onClick={() => setShowProt(true)}>
-            <ShieldCheck size={13} />分支保护
-          </Btn>
-          <Btn
-            variant="primary"
-            className="text-xs px-2.5 py-1"
-            onClick={() => {
-              setShowCreate((v) => !v)
-              setCreateErr(null)
-            }}
-          >
-            <Plus size={13} />新建分支
-          </Btn>
+          {canManageProtection && (
+            <Btn variant="ghost" className="text-xs px-2.5 py-1" onClick={() => setShowProt(true)}>
+              <ShieldCheck size={13} />分支保护
+            </Btn>
+          )}
+          {canCreateBranch && (
+            <Btn
+              variant="primary"
+              className="text-xs px-2.5 py-1"
+              onClick={() => {
+                setShowCreate((v) => !v)
+                setCreateErr(null)
+              }}
+            >
+              <Plus size={13} />新建分支
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -1218,14 +1246,14 @@ function BranchesTab({
                   切换
                 </Btn>
               )}
-              {/* 快捷发起评审：源分支预填该行分支，目标分支默认主分支 */}
-              {!isDefault && (
+              {/* 快捷发起评审：源分支预填该行分支，目标分支默认主分支（ACL：create-mr） */}
+              {!isDefault && canCreateMr && (
                 <Btn variant="ghost" className="text-xs px-2 py-0.5" onClick={() => setMrBranch(b.name)}>
                   <GitPullRequest size={12} />发起评审
                 </Btn>
               )}
-              {/* 删除：非默认且未受保护分支才可删（后端 409 亦兜底提示） */}
-              {!isDefault && !matchedProt && (
+              {/* 删除：非默认且未受保护分支才可删（后端 409 亦兜底提示；ACL：delete-branch） */}
+              {!isDefault && !matchedProt && canDeleteBranch && (
                 confirmDel === b.name ? (
                   <span className="flex shrink-0 items-center gap-1">
                     <Btn
@@ -1792,6 +1820,7 @@ function BranchStrategyTab({
   protections,
   onGoProtections,
   onGoMembers,
+  canManageSettings,
 }: {
   isLive: boolean
   repoName: string
@@ -1799,6 +1828,8 @@ function BranchStrategyTab({
   protections?: RemoteBranchProtection[]
   onGoProtections: () => void
   onGoMembers: () => void
+  /** 能力位（ACL）：分支策略编辑（含模板套用/行内删除等写操作）需 manage-settings；无能力隐藏入口 */
+  canManageSettings: boolean
 }) {
   const qc = useQueryClient()
   const { data: rules = [], isLoading } = useRepoBranchRules(isLive ? repoName : undefined)
@@ -1908,7 +1939,7 @@ function BranchStrategyTab({
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-2.5">
           <span className="text-xs font-semibold text-txt-hi">分支规则表（{rules.length} 条）</span>
           <div className="flex items-center gap-2">
-            {rules.length === 0 && (
+            {rules.length === 0 && canManageSettings && (
               <>
                 <Btn variant="primary" className="px-2.5 py-1 text-xs" onClick={() => void applyTemplate('gitflow')}>
                   <Sparkles size={13} />一键套用 GitFlow 模板
@@ -1918,10 +1949,12 @@ function BranchStrategyTab({
                 </Btn>
               </>
             )}
-            <Btn variant={rules.length === 0 ? 'ghost' : 'primary'} className="px-2.5 py-1 text-xs" onClick={() => setShowEdit(true)}>
-              <Plus size={13} />
-              {rules.length === 0 ? '从零自定义' : '编辑策略'}
-            </Btn>
+            {canManageSettings && (
+              <Btn variant={rules.length === 0 ? 'ghost' : 'primary'} className="px-2.5 py-1 text-xs" onClick={() => setShowEdit(true)}>
+                <Plus size={13} />
+                {rules.length === 0 ? '从零自定义' : '编辑策略'}
+              </Btn>
+            )}
           </div>
         </div>
 
@@ -1957,28 +1990,30 @@ function BranchStrategyTab({
                       {r.description || '-'}
                     </td>
                     <td className="px-3 py-2.5 text-right">
-                      {confirmDel === r.branchType ? (
-                        <span className="inline-flex items-center gap-1">
+                      {canManageSettings && (
+                        confirmDel === r.branchType ? (
+                          <span className="inline-flex items-center gap-1">
+                            <Btn
+                              variant="danger"
+                              className="px-2 py-0.5 text-xs"
+                              disabled={deleting}
+                              onClick={() => void handleDeleteRule(r.branchType)}
+                            >
+                              {deleting ? <Loader2 size={11} className="animate-spin" /> : null}确认删除
+                            </Btn>
+                            <Btn variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => setConfirmDel(undefined)}>
+                              取消
+                            </Btn>
+                          </span>
+                        ) : (
                           <Btn
-                            variant="danger"
-                            className="px-2 py-0.5 text-xs"
-                            disabled={deleting}
-                            onClick={() => void handleDeleteRule(r.branchType)}
+                            variant="ghost"
+                            className="px-2 py-0.5 text-xs text-bad-deep"
+                            onClick={() => setConfirmDel(r.branchType)}
                           >
-                            {deleting ? <Loader2 size={11} className="animate-spin" /> : null}确认删除
+                            <Trash2 size={12} />删除
                           </Btn>
-                          <Btn variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => setConfirmDel(undefined)}>
-                            取消
-                          </Btn>
-                        </span>
-                      ) : (
-                        <Btn
-                          variant="ghost"
-                          className="px-2 py-0.5 text-xs text-bad-deep"
-                          onClick={() => setConfirmDel(r.branchType)}
-                        >
-                          <Trash2 size={12} />删除
-                        </Btn>
+                        )
                       )}
                     </td>
                   </tr>

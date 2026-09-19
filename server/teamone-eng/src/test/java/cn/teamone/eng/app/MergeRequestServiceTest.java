@@ -13,7 +13,7 @@ import cn.teamone.eng.repo.MergeRequestRepository;
 import cn.teamone.eng.repo.MergeReviewerRepository;
 import cn.teamone.eng.repo.RepositoryRepository;
 import cn.teamone.platform.audit.AuditService;
-import cn.teamone.platform.authz.PermissionService;
+import cn.teamone.platform.authz.RepoRole;
 import cn.teamone.shared.api.BusinessException;
 import cn.teamone.shared.api.PermissionDeniedException;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,8 +31,10 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * MergeRequestService 小单测（⑥h 批，纯 Mockito 无 Spring）：
- * 关闭/重开状态机（非法迁移 4xx）、作者/管理员权限口径、
+ * MergeRequestService 小单测（⑥h 批，纯 Mockito 无 Spring；⑥j-A M-b B3 适配）：
+ * 关闭/重开状态机（非法迁移 4xx）、close/reopen 新权限口径
+ * 「作者 ∨ 仓库 Maintainer+ ∨ 平台管理员」（平台管理员由仓库链第 1 步短路，
+ * 档位语义在 RepoAclServiceTest/RepoAclMatrixIT 覆盖，此处锁定服务层委托与短路次序）、
  * V15 auto_delete_after_merge 合并后自动删源分支的三条前置与最佳努力语义。
  *
  * @author Ivan Yang, 2026-09-14
@@ -50,7 +52,7 @@ class MergeRequestServiceTest {
     private BranchRuleService branchRuleService;
     private cn.teamone.eng.infra.git.GitPort gitPort;
     private AuditService audit;
-    private PermissionService permissions;
+    private RepoPermChecker permChecker;
     private MergeRequestService service;
 
     private final UUID authorId = UUID.randomUUID();
@@ -69,11 +71,12 @@ class MergeRequestServiceTest {
         branchRuleService = mock(BranchRuleService.class);
         gitPort = mock(cn.teamone.eng.infra.git.GitPort.class);
         audit = mock(AuditService.class);
-        permissions = mock(PermissionService.class);
+        // M-b：平台 PermissionService 换 RepoPermChecker 仓库回退检查器（mock 放行）
+        permChecker = mock(RepoPermChecker.class);
 
         service = new MergeRequestService(mrRepo, reviewerRepo, checkRepo, commentRepo,
                 mock(MergeConflictResolutionRepository.class), repositoryRepo,
-                branchProtectionService, branchRuleService, gitPort, audit, permissions, 60, 80);
+                branchProtectionService, branchRuleService, gitPort, audit, permChecker, 60, 80);
     }
 
     private MergeRequest mr(String status) {
@@ -102,18 +105,12 @@ class MergeRequestServiceTest {
         when(mrRepo.findById(mrId)).thenReturn(Optional.of(mr));
     }
 
-    /** 作者本人可关闭/重开（无需管理员） */
-    private void stubAuthorPermission() {
-        // isAuthor 命中即短路，不会触达 permissions.check
-    }
-
     // ==================== A：关闭/重开 ====================
 
     @Test
     void close_byAuthor_openToClosed_withCommentAndAudit() {
         MergeRequest mr = mr("open");
         stubFound(mr);
-        stubAuthorPermission();
 
         service.closeMr(mrId, authorId);
 
@@ -124,26 +121,33 @@ class MergeRequestServiceTest {
         verify(commentRepo).save(comment.capture());
         assertTrue(comment.getValue().getText().contains("关闭评审"));
         verify(audit).record(eq(authorId), eq("mr.close"), eq("mr"), eq(mrId.toString()), any());
+        // 作者短路在前：不触达角色下限断言
+        verifyNoInteractions(permChecker);
     }
 
     @Test
-    void close_byAdminWithoutAuthorship_allowed() {
+    void close_byNonAuthorMaintainer_allowed_andDelegatesRoleFloor() {
+        // M-b B3 新口径：非作者走「仓库 Maintainer+ ∨ 平台管理员」（角色下限断言）——
+        // mock 放行即模拟 Maintainer/平台管理员命中（档位语义另见 RepoAclServiceTest）
         MergeRequest mr = mr("draft");
         stubFound(mr);
-        when(permissions.check(actorId, "platform", PermissionService.PLATFORM_RESOURCE_ID, "platform:manage"))
-                .thenReturn(true);
 
         service.closeMr(mrId, actorId);
 
         assertEquals("closed", mr.getStatus());
+        verify(permChecker).requireRoleAtLeast(actorId, repoId, RepoRole.MAINTAINER, "关闭评审");
         verify(audit).record(eq(actorId), eq("mr.close"), anyString(), anyString(), any());
     }
 
     @Test
-    void close_byOutsider_denied403() {
+    void close_byNonAuthorDeveloper_denied403() {
+        // M-b B3 新口径：非作者且角色低于 Maintainer（mock 拒绝即 Developer/Reporter/无角色形态）
+        // → 403 T1-PLT-4030，无副作用
         stubFound(mr("open"));
-        when(permissions.check(actorId, "platform", PermissionService.PLATFORM_RESOURCE_ID, "platform:manage"))
-                .thenReturn(false);
+        doThrow(new PermissionDeniedException(
+                cn.teamone.shared.api.ErrorCode.PLT_4030, "无权限", null))
+                .when(permChecker).requireRoleAtLeast(eq(actorId), eq(repoId),
+                        eq(RepoRole.MAINTAINER), anyString());
 
         PermissionDeniedException e = assertThrows(PermissionDeniedException.class,
                 () -> service.closeMr(mrId, actorId));
@@ -189,12 +193,14 @@ class MergeRequestServiceTest {
         assertTrue(e1.getMessage().contains("不可重开"));
         // open 状态无需重开
         stubFound(mr("open"));
-        BusinessException e2 = assertThrows(BusinessException.class, () -> service.reopenMr(mrId, authorId));
+        BusinessException e2 = assertThrows(BusinessException.class, () -> service.reopenMr(mrId, actorId));
         assertEquals(400, e2.errorCode().httpStatus());
-        // 重开也要过权限关（非作者非管理员拒绝）
+        // 重开也要过权限关（非作者且角色不足拒绝，M-b B3 口径）
         stubFound(mr("closed"));
-        when(permissions.check(actorId, "platform", PermissionService.PLATFORM_RESOURCE_ID, "platform:manage"))
-                .thenReturn(false);
+        doThrow(new PermissionDeniedException(
+                cn.teamone.shared.api.ErrorCode.PLT_4030, "无权限", null))
+                .when(permChecker).requireRoleAtLeast(eq(actorId), eq(repoId),
+                        eq(RepoRole.MAINTAINER), anyString());
         assertThrows(PermissionDeniedException.class, () -> service.reopenMr(mrId, actorId));
     }
 

@@ -84,4 +84,18 @@ public interface WorkItemRepository
             + "OR (type = 'requirement' AND status IN ('delivered','closed')))"
             + " GROUP BY type ORDER BY type", nativeQuery = true)
     List<UnfinishedWorkItemView> findUnfinishedByReleaseGrouped(@Param("id") UUID releaseId);
+
+    // ==================== 需求拆解任务计数（GET /work-items 列表 requirement 行投影） ====================
+    // children 按 parent_id、type ∈ task/test_task/defect；done 字面量与 WorkItem.doneStatusesOf
+    // 字节级一致（task done·closed / test_task passed / defect 已修复·回归通过·已关闭）。
+    // 列表 size≤200，一次 IN 聚合防 N+1；无子行的父 id 不出现在结果（装配处兜 0/0）。
+
+    /** 一批需求行的子任务统计（taskCount/taskDoneCount，按 parent_id 分组） */
+    @Query(value = "SELECT parent_id AS \"parentId\", count(*) AS \"taskCount\", "
+            + "count(*) FILTER (WHERE (type = 'task' AND status IN ('done','closed')) "
+            + "OR (type = 'test_task' AND status = 'passed') "
+            + "OR (type = 'defect' AND status IN ('已修复','回归通过','已关闭'))) AS \"taskDoneCount\" "
+            + "FROM prd.work_item WHERE parent_id IN (:ids) AND type IN ('task','test_task','defect') "
+            + "GROUP BY parent_id", nativeQuery = true)
+    List<ChildCountView> childStatsByParentIds(@Param("ids") Collection<UUID> parentIds);
 }

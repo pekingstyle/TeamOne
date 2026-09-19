@@ -1,5 +1,7 @@
 package cn.teamone.platform.authz;
 
+import java.util.List;
+
 /**
  * 仓库级动作目录（docs/v2/13-ACL资源权限设计.md v1.1 §2.2，14 个动作的字符串常量）。
  *
@@ -39,6 +41,15 @@ public final class RepoActions {
     public static final String BASELINE_CREATE = "baseline:create";
     /** 基线定版会签 approve 与变更换版 supersede（扩展动作） */
     public static final String BASELINE_APPROVE = "baseline:approve";
+
+    /**
+     * 14 个动作的目录全集（目录声明序；供能力位查询接口 GET /repos/{id}/me/permissions
+     * 逐动作走五步链展开「实际放行集合」——⑥j-A M-b B1 契约）。
+     */
+    public static final List<String> ALL = List.of(
+            VIEW, PULL, PUSH, CREATE_BRANCH, DELETE_BRANCH, CREATE_MR, MERGE,
+            MANAGE_PROTECTION, MANAGE_SETTINGS, TRIGGER_PIPELINE, REGISTER_DEPLOYMENT,
+            REVIEW, BASELINE_CREATE, BASELINE_APPROVE);
 
     private RepoActions() {
         // 常量目录，禁止实例化

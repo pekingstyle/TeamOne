@@ -61,6 +61,21 @@ public class BaselineService {
     }
 
     /**
+     * 基线→所属仓库解析（⑥j-A M-b B1 服务层回退定位：无 /repos 前缀端点
+     * {@code /baselines/{id}/**} 经 repo_id 列归一 repoId，§2.1「基线权限锚点 = repo_id」）。
+     *
+     * @param id 基线 UUID
+     * @return 所属仓库 id（永不为 null）
+     * @throws BusinessException 基线不存在时 404
+     */
+    @Transactional(readOnly = true)
+    public UUID repoIdOf(UUID id) {
+        return baselineRepo.findById(id)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "基线不存在: " + id))
+                .getRepoId();
+    }
+
+    /**
      * 查询指定仓库下建立的所有质量/工程基线列表，按创建时间降序排序。
      *
      * @param repoIdOrName 仓库 ID 或仓库短名称

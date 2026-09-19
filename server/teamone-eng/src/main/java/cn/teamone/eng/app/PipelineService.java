@@ -11,11 +11,14 @@ import cn.teamone.eng.infra.git.GitCommit;
 import cn.teamone.eng.infra.git.GitPort;
 import cn.teamone.eng.repo.PipelineRunRepository;
 import cn.teamone.eng.repo.RepositoryRepository;
+import cn.teamone.platform.authz.RepoActions;
+import cn.teamone.platform.domain.AppUser;
 import cn.teamone.shared.api.BusinessException;
 import cn.teamone.shared.api.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -24,12 +27,20 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * 自研流水线业务服务（07 §2.4 / 05 §2.3 / M2-INC-3 V-16）。
+ *
+ * <p>ACL 接入（⑥j-A M-b B1/B4 · docs/v2/13 §2.2/§5.2）：流水线权限锚点 = run 关联仓库
+ * （§2.1）。{@code /repos/{idOrName}/pipelines/trigger} 走切面（trigger-pipeline，控制器标注）；
+ * 无 /repos 前缀端点（GET /pipelines、GET /pipelines/{id}、POST /pipelines/{id}/rerun）
+ * 在本服务层回退断言——查询→view、rerun→trigger-pipeline；GET /pipelines 跨仓列表对
+ * PRIVATE 仓结果集逐仓剔除（§5.2 清单行「按仓库可见性过滤结果集」，B4）。</p>
  *
  * @author Ivan Yang, 2026-09-13
  */
@@ -42,16 +53,19 @@ public class PipelineService {
     private final RepositoryRepository repositoryRepo;
     private final GitPort gitPort;
     private final MergeRequestService mergeRequestService;
+    private final RepoPermChecker permChecker;
 
     public PipelineService(
             PipelineRunRepository pipelineRepo,
             RepositoryRepository repositoryRepo,
             GitPort gitPort,
-            MergeRequestService mergeRequestService) {
+            MergeRequestService mergeRequestService,
+            RepoPermChecker permChecker) {
         this.pipelineRepo = pipelineRepo;
         this.repositoryRepo = repositoryRepo;
         this.gitPort = gitPort;
         this.mergeRequestService = mergeRequestService;
+        this.permChecker = permChecker;
     }
 
     /**
@@ -78,13 +92,19 @@ public class PipelineService {
     /**
      * 分页查询流水线运行历史记录。
      * <p>
-     * 支持多维度过滤：
+     * 支持多维度组合过滤：
      * <ul>
      *   <li>repoIdOrName：指定仓库过滤（为空时全局跨仓查询）</li>
      *   <li>status：按运行状态过滤（如 "passed", "failed", "running"，"all" 或空表示不过滤）</li>
      * </ul>
      * </p>
      *
+     * <p>ACL（M-b B1/B4）：指定仓库时按单仓读口径断言 view（无 view → 403，§5.2）；
+     * 跨仓列表对 PRIVATE 仓运行记录逐仓剔除（repoId 去重后逐仓 view 判定；平台管理员整体跳过）。
+     * 现网无 PRIVATE 数据 = 行为零变化，仅过滤路径就位。简化口径（挂账）：剔除不重分页，
+     * total 按剔除数等量下调；精确分页需查询侧 join 可见性，v2.1 评估。</p>
+     *
+     * @param me           当前登录用户（服务层回退判定主体；null 为防御分支，不过滤不断言）
      * @param repoIdOrName 可选的仓库 ID 或名称
      * @param status       可选的状态过滤
      * @param page         当前页码（从 1 开始）
@@ -92,13 +112,15 @@ public class PipelineService {
      * @return 包含仓库名与阶段轨道概要的分页流水线运行记录
      */
     @Transactional(readOnly = true)
-    public Page<PipelineRunResponse> listPipelines(String repoIdOrName, String status, int page, int size) {
+    public Page<PipelineRunResponse> listPipelines(AppUser me, String repoIdOrName, String status, int page, int size) {
         Pageable pageable = PageRequest.of(Math.max(0, page - 1), Math.max(1, size));
         Page<PipelineRun> runs;
         Map<UUID, String> repoNames = new HashMap<>();
 
         if (repoIdOrName != null && !repoIdOrName.isBlank()) {
             Repository repo = findRepo(repoIdOrName);
+            // 单仓过滤形态：读端点收口口径（§5.2「无 view → 403（单仓）」）
+            requireRepoPerm(me, repo.getId(), RepoActions.VIEW);
             repoNames.put(repo.getId(), repo.getName());
             if (status != null && !status.isBlank() && !"all".equalsIgnoreCase(status)) {
                 runs = pipelineRepo.findByRepoIdAndStatusOrderByCreatedAtDesc(repo.getId(), status.toLowerCase(), pageable);
@@ -113,24 +135,54 @@ public class PipelineService {
             }
         }
 
-        return runs.map(r -> {
+        // B4 跨仓 PRIVATE 过滤：逐仓 view 判定（repoId 去重；平台管理员/无主体整体跳过）
+        Set<UUID> hiddenRepos = hiddenRepos(me, runs.getContent());
+        List<PipelineRunResponse> visible = new ArrayList<>(runs.getContent().size());
+        for (PipelineRun r : runs.getContent()) {
             String repoName = repoNames.computeIfAbsent(r.getRepoId(), id ->
                     repositoryRepo.findById(id).map(Repository::getName).orElse(""));
-            return toResponse(r, repoName);
-        });
+            if (!hiddenRepos.contains(r.getRepoId())) {
+                visible.add(toResponse(r, repoName));
+            }
+        }
+        if (visible.size() == runs.getContent().size()) {
+            return new PageImpl<>(visible, pageable, runs.getTotalElements());
+        }
+        // 简化口径：total 等量下调（本页剔除数），不重取页
+        return new PageImpl<>(visible, pageable, runs.getTotalElements() - (runs.getContent().size() - visible.size()));
+    }
+
+    /** 结果集中对当前用户不可见（无 view）的仓库集合（repoId 去重判定） */
+    private Set<UUID> hiddenRepos(AppUser me, List<PipelineRun> runs) {
+        if (me == null || RepoPermChecker.isPlatformAdmin(me) || runs.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> hidden = new HashSet<>();
+        Set<UUID> judged = new HashSet<>();
+        for (PipelineRun r : runs) {
+            if (judged.add(r.getRepoId()) && !permChecker.check(me.getId(), r.getRepoId(), RepoActions.VIEW)) {
+                hidden.add(r.getRepoId());
+            }
+        }
+        return hidden;
     }
 
     /**
      * 根据流水线运行主键 ID 获取详细执行记录（含全部阶段轨道与控制台输出日志）。
      *
-     * @param id 流水线运行 ID
-     * @return 包含完整作业与控制台日志的流水线详情
+     * <p>ACL（M-b B1）：view（服务层回退：run→关联仓库解析，§5.2「GET /pipelines/{id}
+     * 无 view → 403」；me=null 为防御分支不断言，/api/** 已 authenticated）。</p>
+     *
+     * @param me 当前登录用户
+     * @param id 流水线记录的唯一标识 UUID
+     * @return 包含构建阶段、各作业步骤执行状态与实时控制台日志的完整流水线快照
      * @throws BusinessException 当记录不存在时抛出
      */
     @Transactional(readOnly = true)
-    public PipelineRunResponse getPipeline(UUID id) {
+    public PipelineRunResponse getPipeline(AppUser me, UUID id) {
         PipelineRun r = pipelineRepo.findById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "流水线运行不存在: " + id));
+        requireRepoPerm(me, r.getRepoId(), RepoActions.VIEW);
         String repoName = repositoryRepo.findById(r.getRepoId()).map(Repository::getName).orElse("");
         return toResponse(r, repoName);
     }
@@ -221,16 +273,21 @@ public class PipelineService {
     /**
      * 重新执行（Rerun）指定的流水线。
      *
-     * @param id            流水线运行 ID
+     * <p>ACL（M-b B1）：trigger-pipeline（§2.2「手动触发 / rerun 流水线」，Developer+；
+     * 服务层回退：run→关联仓库解析；me=null 为防御分支不断言）。</p>
+     *
+     * @param me            当前登录用户
+     * @param id            流水线记录 ID
      * @param triggerUserId 重新运行的发起人用户 ID
      * @return 重新执行后的流水线详情
      */
     @Transactional
-    public PipelineRunResponse rerunPipeline(UUID id, UUID triggerUserId) {
+    public PipelineRunResponse rerunPipeline(AppUser me, UUID id, UUID triggerUserId) {
         PipelineRun run = pipelineRepo.findById(id)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "流水线运行不存在: " + id));
         Repository repo = repositoryRepo.findById(run.getRepoId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "仓库不存在"));
+        requireRepoPerm(me, run.getRepoId(), RepoActions.TRIGGER_PIPELINE);
 
         run.setTriggerUserId(triggerUserId);
         run.setStartedAt(Instant.now());
@@ -243,6 +300,16 @@ public class PipelineService {
         feedMrGateIfLinked(run);
 
         return toResponse(run, repo.getName());
+    }
+
+    // ==================== 内部 ====================
+
+    /** 服务层回退断言（§4.4 定位器②）：run→仓库归一后走仓库五步链；me=null 防御分支不断言 */
+    private void requireRepoPerm(AppUser me, UUID repoId, String action) {
+        if (me == null) {
+            return;
+        }
+        permChecker.require(me.getId(), repoId, action);
     }
 
     /**
