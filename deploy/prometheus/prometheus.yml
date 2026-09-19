@@ -1,0 +1,23 @@
+# TeamOne 生产监控与告警抓取配置（V-17）
+# 针对 teamone-server 的 Actuator Prometheus 端点进行秒级健康与指标拉取
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # TeamOne 核心服务端指标抓取
+  - job_name: 'teamone-server'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['teamone-server:8080', 'localhost:8080', '127.0.0.1:8080']
+        labels:
+          application: 'teamone'
+          service: 'server'
+          env: 'production'
+
+  # Prometheus 自身健康状态
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

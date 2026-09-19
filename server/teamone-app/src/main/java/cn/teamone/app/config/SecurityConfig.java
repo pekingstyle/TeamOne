@@ -37,6 +37,9 @@ public class SecurityConfig {
             .authorizeHttpRequests(a -> {
                 var rules = a.requestMatchers("/api/v1/auth/login", "/api/v1/auth/refresh",
                                               "/actuator/health", "/actuator/info", "/ws").permitAll();
+                // W4: git post-receive hook 回调——permitAll 仅此一路，鉴权走 X-TeamOne-Hook-Token
+                // 共享口令（GitHookController 常量时间比较；07 §2.2），其余 /api/** 仍强制 JWT
+                rules = rules.requestMatchers("/api/v1/git/hooks/post-receive").permitAll();
                 // OpenAPI 契约端点：dev 阶段公开（默认 true），M3 私有化交付收紧为 false
                 if (openapiPublic) {
                     rules = rules.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html")

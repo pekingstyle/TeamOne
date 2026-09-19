@@ -80,6 +80,71 @@ public class RedisDecisionCache implements DecisionCache {
         }
     }
 
+    // ==================== 仓库判定缓存（⑥i-A1 M-a · A7①，键版本方案） ====================
+
+    /** 版本键：acl:repo:{repoId}:ver（无 TTL 常驻；读时懒建=1） */
+    private static String repoVerKey(UUID repoId) {
+        return "acl:repo:" + repoId + ":ver";
+    }
+
+    /** 决策键：acl:dec:{repoId}:{ver}:{userId}:{action}（版本进键 → bump 后旧键整体惰性失效） */
+    private static String repoDecKey(UUID repoId, long version, UUID userId, String action) {
+        return "acl:dec:" + repoId + ":" + version + ":" + userId + ":" + action;
+    }
+
+    @Override
+    public Optional<Long> repoVersion(UUID repoId) {
+        try {
+            String v = redis.opsForValue().get(repoVerKey(repoId));
+            if (v == null) {
+                // 读时懒建 = 1（setIfAbsent 防并发覆盖真实已 INCR 的值）
+                redis.opsForValue().setIfAbsent(repoVerKey(repoId), "1");
+                v = redis.opsForValue().get(repoVerKey(repoId));
+            }
+            return v == null ? Optional.empty() : Optional.of(Long.parseLong(v));
+        } catch (RuntimeException e) {
+            warnOnce(e);
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public Optional<Boolean> getRepoDecision(UUID repoId, long version, UUID userId, String action) {
+        try {
+            String v = redis.opsForValue().get(repoDecKey(repoId, version, userId, action));
+            return v == null ? Optional.empty() : Optional.of("1".equals(v));
+        } catch (RuntimeException e) {
+            warnOnce(e);
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public void putRepoDecision(UUID repoId, long version, UUID userId, String action, boolean allowed) {
+        try {
+            // TTL 沿既有 acl-ttl-seconds（5min）兜底：极端场景（版本键被淘汰回卷）最坏脏读 ≤ TTL
+            redis.opsForValue().set(repoDecKey(repoId, version, userId, action), allowed ? "1" : "0", ttl);
+        } catch (RuntimeException e) {
+            warnOnce(e);
+        }
+    }
+
+    @Override
+    public void bumpRepoVersion(UUID repoId) {
+        try {
+            // INCR 版本：成员变更后旧版本决策键因版本进键而全部不可命中（O(1) 失效，无成员枚举）
+            redis.opsForValue().increment(repoVerKey(repoId));
+            // DEL 该仓相关判定键（键空间 = 仓 × 用户 × 动作，小而低频；竞态下误删的新版本键
+            // 只会造成一次缓存 miss 直查 DB，不损正确性；Valkey 故障走 catch 降级，TTL 兜底）
+            java.util.Set<String> stale = redis.keys("acl:dec:" + repoId + ":*");
+            if (stale != null && !stale.isEmpty()) {
+                redis.delete(stale);
+            }
+        } catch (RuntimeException e) {
+            warnOnce(e);
+        }
+    }
+
     private void warnOnce(RuntimeException e) {
         if (failureLogged.compareAndSet(false, true)) {
             log.warn("[acl-cache] Valkey 不可用，授权决策缓存降级为直查（不影响主流程）: {}", e.getMessage());

@@ -16,5 +16,22 @@
       <groupId>cn.teamone</groupId>
       <artifactId>teamone-shared</artifactId>
     </dependency>
+    <!-- W2-B4: 门禁/状态机使用 platform SPI（PermissionService/OutboxWriter/IdempotencyService/AuditService
+         + AuditableListener），架构设计 §1.4 允许 prd→platform 单向依赖 -->
+    <dependency>
+      <groupId>cn.teamone</groupId>
+      <artifactId>teamone-platform</artifactId>
+    </dependency>
+    <!-- W2: JPA 实体/仓库 + JdbcTemplate（key_sequence 行锁发号，05 §2.4） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- W2-B6: TransitionTableTest 纯逻辑单测 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

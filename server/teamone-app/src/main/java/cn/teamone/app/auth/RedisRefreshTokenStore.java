@@ -4,6 +4,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -48,5 +49,24 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
     @Override
     public void revoke(String tokenHash) {
         redis.delete(key(tokenHash));
+    }
+
+    @Override
+    public void revokeAllForUser(UUID userId, String exceptHash) {
+        // 改密强制下线（保留当前设备）：键空间为 hash→userId 单向索引，只能 SCAN 全量比对值删除。
+        // 令牌键量级 = 活跃会话数（≤ 用户数 × 设备数，量小），SCAN 一次性可接受；
+        // 与 JPA 实现的语义差异：值存储无吊销痕迹，过期键由 TTL 天然消失，DEL 即永久失效
+        String exempt = (exceptHash == null || exceptHash.isBlank()) ? null : key(exceptHash);
+        java.util.Set<String> keys = redis.keys("rt:*");
+        if (keys == null || keys.isEmpty()) {
+            return;
+        }
+        List<String> hit = keys.stream()
+                .filter(k -> !k.equals(exempt))
+                .filter(k -> userId.toString().equals(redis.opsForValue().get(k)))
+                .toList();
+        if (!hit.isEmpty()) {
+            redis.delete(hit);
+        }
     }
 }

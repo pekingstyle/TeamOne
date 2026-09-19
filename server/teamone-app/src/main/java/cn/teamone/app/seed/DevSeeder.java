@@ -18,8 +18,14 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 开发种子（幂等）：部门 + 三个账号 + 一条 ACL 授予。
  * 账号口令见 deploy/README-dev.md（仅开发环境，生产禁用本 Seeder）。
+ *
+ * <p>R-13 种子开关一拆二（评审必改①）：挂 {@code teamone.seed.enabled}（账号/ACL/引导类，
+ * 默认 true 且任何环境不关——关闭将无账号可登录）；演示数据开关在 teamone.seed.demo，
+ * 与本开关互不影响。</p>
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        name = "teamone.seed.enabled", havingValue = "true", matchIfMissing = true)
 public class DevSeeder implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DevSeeder.class);

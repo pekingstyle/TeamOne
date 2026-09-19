@@ -1,18 +1,29 @@
-// 流水线详情：阶段轨道 + Job 卡片 + 日志面板
+// CI/CD 流水线运行详情视图：阶段轨道 (Stage Track) + Job 步骤卡片 + 控制台日志输出面板
 import { Fragment, useState } from 'react'
-import { ArrowLeft, CalendarClock, GitBranch, GitCommitHorizontal, Play, Timer } from 'lucide-react'
+import { ArrowLeft, CalendarClock, GitBranch, GitCommitHorizontal, Play, Sparkles, Timer, Loader2 } from 'lucide-react'
 import type { Job, RunStatus, Stage } from '../../data/types'
 import { pipelineById, repoById, runPipeline, useStore, userById } from '../../data/store'
+import { usePipeline, pipelinesApi } from '../../api/queries'
 import { Avatar, Badge, Btn, Card, CardHeader, Empty, StatusDot, runStatusText } from '../../components/ui'
 import type { PageProps } from '../../nav'
 
+/**
+ * 格式化持续时间（秒）为直观的中文展示文案（如 "42秒" 或 "1分58秒"）
+ */
 function fmtDur(sec: number | undefined): string {
   if (sec === undefined) return '—'
   if (sec < 60) return `${sec}秒`
   return `${Math.floor(sec / 60)}分${String(sec % 60).padStart(2, '0')}秒`
 }
 
-/** 由 jobs 推导阶段状态 */
+/**
+ * 根据阶段内包含的各个 Job 状态推导阶段（Stage）的整体流转状态：
+ * 1. 任意 Job 失败 -> 阶段失败 (failed)
+ * 2. 存在运行中 Job -> 阶段运行中 (running)
+ * 3. 所有 Job 均通过 -> 阶段通过 (passed)
+ * 4. 所有 Job 均被跳过或取消 -> 阶段跳过 (skipped)
+ * 5. 其余情况 -> 等待中 (pending)
+ */
 function stageStatus(jobs: Job[]): RunStatus {
   if (jobs.some((j) => j.status === 'failed')) return 'failed'
   if (jobs.some((j) => j.status === 'running')) return 'running'
@@ -21,6 +32,7 @@ function stageStatus(jobs: Job[]): RunStatus {
   return 'pending'
 }
 
+/** 详情页顶部大状态胶囊徽章样式映射 */
 const bigStatusStyle: Record<RunStatus, string> = {
   passed: 'bg-ok/12 text-ok',
   failed: 'bg-bad/12 text-bad',
@@ -30,12 +42,62 @@ const bigStatusStyle: Record<RunStatus, string> = {
   canceled: 'bg-ink-700 text-txt-mid',
 }
 
+/**
+ * CI/CD 单次流水线执行详情页组件
+ */
 export default function PipelineDetailPage({ nav, id }: PageProps) {
   useStore()
+  // 当前在控制台日志面板中选中的 Job ID
   const [selId, setSelId] = useState<string | null>(null)
-  const p = id ? pipelineById(id) : undefined
+  // 重新运行操作中的 Loading 状态
+  const [isRerunning, setIsRerunning] = useState(false)
 
-  if (!p) {
+  // 远端流水线查询 Hook（根据当前流水线 UUID 查询）
+  const { data: remotePipeline, isLoading: isRemoteLoading, refetch } = usePipeline(id)
+  const mockPipeline = id ? pipelineById(id) : undefined
+
+  // 判定是否已连接真实后端
+  const isLive = !!remotePipeline
+  // 数据格式统一：优先使用后端返回数据，无后端时优雅回退至本地 Store 中的 Mock 记录
+  const p = remotePipeline
+    ? {
+        id: remotePipeline.id,
+        title: remotePipeline.title,
+        repoName: remotePipeline.repoName,
+        branch: remotePipeline.branch,
+        commitShort: remotePipeline.commitShort ?? (remotePipeline.commitSha ? remotePipeline.commitSha.slice(0, 7) : '-'),
+        triggerUserId: remotePipeline.triggerUserId || 'u-eng-lead',
+        durationSec: remotePipeline.durationSec ?? 0,
+        startedAt: remotePipeline.startedAt ? remotePipeline.startedAt.slice(0, 19).replace('T', ' ') : '-',
+        status: remotePipeline.status as RunStatus,
+        stages: remotePipeline.stages.map((s) => ({
+          name: s.name,
+          jobs: s.jobs.map((j) => ({
+            id: j.id,
+            name: j.name,
+            status: j.status as RunStatus,
+            durationSec: j.durationSec,
+            log: j.logs || [],
+          })),
+        })),
+      }
+    : mockPipeline
+    ? {
+        id: mockPipeline.id,
+        title: mockPipeline.title,
+        repoName: repoById(mockPipeline.repoId)?.name ?? mockPipeline.repoId,
+        branch: mockPipeline.branch,
+        commitShort: mockPipeline.commitShort,
+        triggerUserId: mockPipeline.triggerUserId,
+        durationSec: mockPipeline.durationSec,
+        startedAt: mockPipeline.startedAt,
+        status: mockPipeline.status,
+        stages: mockPipeline.stages,
+      }
+    : undefined
+
+  // 流水线未查到且加载完成状态
+  if (!p && !isRemoteLoading) {
     return (
       <div>
         <button type="button" onClick={() => nav.go('pipelines')} className="mb-4 flex cursor-pointer items-center gap-1 text-xs text-txt-low hover:text-brand">
@@ -46,13 +108,40 @@ export default function PipelineDetailPage({ nav, id }: PageProps) {
     )
   }
 
-  const repo = repoById(p.repoId)
+  // 加载中过渡态
+  if (!p) {
+    return (
+      <div className="py-12 text-center text-xs text-txt-low flex items-center justify-center gap-2">
+        <Loader2 size={16} className="animate-spin text-brand" />加载流水线详情...
+      </div>
+    )
+  }
+
   const triggerUser = userById(p.triggerUserId)
   const allJobs = p.stages.flatMap((s) => s.jobs)
+  // 智能默认选中策略：优先高亮出错的 Job，其次高亮正在运行的 Job，否则默认选中首个 Job
   const autoJob =
     allJobs.find((j) => j.status === 'failed') ?? allJobs.find((j) => j.status === 'running') ?? allJobs[0]
   const sel = allJobs.find((j) => j.id === selId) ?? autoJob
-  const isRunning = p.status === 'running'
+  const isRunning = p.status === 'running' || isRerunning
+
+  /**
+   * 触发重新执行流水线操作（Rerun）
+   */
+  async function handleRun() {
+    if (!id) return
+    if (isLive) {
+      setIsRerunning(true)
+      try {
+        await pipelinesApi.rerun(id)
+        await refetch()
+      } finally {
+        setIsRerunning(false)
+      }
+    } else {
+      runPipeline(id)
+    }
+  }
 
   return (
     <div>
@@ -64,25 +153,30 @@ export default function PipelineDetailPage({ nav, id }: PageProps) {
           </button>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-xl font-bold text-txt-hi">{p.title}</h1>
+            {isLive && (
+              <Badge tone="brand">
+                <Sparkles size={12} className="mr-0.5" />自研流水线
+              </Badge>
+            )}
             <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold ${bigStatusStyle[p.status]}`}>
               <StatusDot status={p.status} />
-              {runStatusText[p.status]}
+              {runStatusText[p.status] ?? p.status}
               {isRunning && <span className="tabular-nums">…</span>}
             </span>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-txt-mid">
-            <span className="font-mono text-txt-low">{repo?.name ?? p.repoId}</span>
+            <span className="font-mono text-txt-low">{p.repoName}</span>
             <span className="inline-flex items-center gap-1 font-mono"><GitBranch size={11} className="text-txt-low" />{p.branch}</span>
             <span className="inline-flex items-center gap-1 font-mono"><GitCommitHorizontal size={11} className="text-txt-low" />{p.commitShort}</span>
             <span className="inline-flex items-center gap-1.5">
               <Avatar userId={p.triggerUserId} size={18} />
-              {triggerUser?.name ?? '未知'} 触发
+              {triggerUser?.name ?? '自动/系统'} 触发
             </span>
             <span className="inline-flex items-center gap-1 tabular-nums"><Timer size={11} className="text-txt-low" />{fmtDur(p.durationSec)}</span>
             <span className="inline-flex items-center gap-1 tabular-nums"><CalendarClock size={11} className="text-txt-low" />{p.startedAt}</span>
           </div>
         </div>
-        <Btn variant="primary" disabled={isRunning} onClick={() => runPipeline(p.id)}>
+        <Btn variant="primary" disabled={isRunning} onClick={handleRun}>
           {isRunning ? (
             <>
               <span className="h-2 w-2 animate-pulse rounded-full bg-ink-950" />
@@ -91,11 +185,12 @@ export default function PipelineDetailPage({ nav, id }: PageProps) {
           ) : (
             <>
               <Play size={14} />
-              运行流水线
+              重新运行流水线
             </>
           )}
         </Btn>
       </div>
+
 
       {/* 阶段轨道 */}
       <Card className="mb-4">

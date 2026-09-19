@@ -90,7 +90,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #d4d4d4 transparent;
+  scrollbar-color: var(--scrollbar-thumb, #d4d4d4) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -99,7 +99,7 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: #d4d4d4;
+  background: var(--scrollbar-thumb, #d4d4d4);
   border-radius: 4px;
 }
 
@@ -109,33 +109,48 @@ body {
 
 
 /* 深色主题 */
+/* 深色主题 v2（2026-09-14 重做）：中性深灰底 + 紫色品牌同相 + 柔和语义色
+ * 设计口径：
+ * - 底色去蓝调走中性灰（v1 深蓝底整体发闷），canvas/card/sidebar 三层拉开肉眼可辨的明度阶梯
+ * - brand 与亮色 #7b68ee 同色相提亮为 #9d8dfd（v1 误用蓝 #4da3ff，与亮色品牌断裂）
+ * - 文字 low 从 3.5:1 提到 ≥4.6:1；语义色降饱和柔化，*-deep 在深色下语义为"更亮"（hover/强调）
+ * - cat-* 8 分类色同步深色适配（亮色饱和度在深底上刺眼） */
 [data-theme="dark"] {
-  --color-canvas: #0b101c;
-  --color-card: #0e1524;
-  --color-sidebar: #070b14;
-  --color-ink-950: #070b14;
-  --color-ink-900: #0b101c;
-  --color-ink-850: #0e1524;
-  --color-ink-800: #121a2b;
-  --color-ink-700: #1a2338;
-  --color-txt-hi: #e9eef7;
-  --color-txt-mid: #97a3ba;
-  --color-txt-low: #5d6b86;
-  --color-brand: #4da3ff;
-  --color-brand-deep: #2e7fe0;
-  --color-brand-bg: rgba(77, 163, 255, 0.12);
-  --color-vio: #b49cff;
-  --color-ok: #3adfa5;
-  --color-ok-bg: rgba(58, 223, 165, 0.12);
-  --color-ok-deep: #3adfa5;
-  --color-warn: #ffc94d;
-  --color-warn-bg: rgba(255, 201, 77, 0.12);
-  --color-warn-deep: #ffc94d;
-  --color-bad: #ff7a7a;
-  --color-bad-bg: rgba(255, 122, 122, 0.12);
-  --color-bad-deep: #ff7a7a;
-  --color-info: #4dc3ff;
-  --color-info-bg: rgba(0, 145, 255, 0.12);
-  --color-line: #1d2740;
-  --color-line-hi: #2a3854;
+  --color-canvas: #101218;
+  --color-card: #171a23;
+  --color-sidebar: #0c0e14;
+  --color-ink-950: #0c0e14;
+  --color-ink-900: #101218;
+  --color-ink-850: #171a23;
+  --color-ink-800: #1e222e;
+  --color-ink-700: #262b3a;
+  --color-txt-hi: #f0f2f8;
+  --color-txt-mid: #a6adc0;
+  --color-txt-low: #7b8497;
+  --color-brand: #9d8dfd;
+  --color-brand-deep: #b3a7ff;
+  --color-brand-bg: rgba(157, 141, 253, 0.14);
+  --color-vio: #c0b5ff;
+  --color-ok: #4fd1a1;
+  --color-ok-bg: rgba(79, 209, 161, 0.13);
+  --color-ok-deep: #7fe0bd;
+  --color-warn: #f0c26a;
+  --color-warn-bg: rgba(240, 194, 106, 0.13);
+  --color-warn-deep: #f6d48d;
+  --color-bad: #f2807f;
+  --color-bad-bg: rgba(242, 128, 127, 0.13);
+  --color-bad-deep: #f8a3a2;
+  --color-info: #6cc3f5;
+  --color-info-bg: rgba(108, 195, 245, 0.13);
+  --color-line: #232838;
+  --color-line-hi: #343d58;
+  --color-cat-purple: #a996f8;
+  --color-cat-blue: #6fb4f6;
+  --color-cat-green: #5ecf9e;
+  --color-cat-yellow: #ecc76f;
+  --color-cat-orange: #f2a06b;
+  --color-cat-red: #f28b8a;
+  --color-cat-pink: #ef9bd3;
+  --color-cat-teal: #5fc9c5;
+  --scrollbar-thumb: #343d58;
 }

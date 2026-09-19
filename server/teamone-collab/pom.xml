@@ -16,5 +16,26 @@
       <groupId>cn.teamone</groupId>
       <artifactId>teamone-shared</artifactId>
     </dependency>
+    <!-- W3-③b: NotificationController 登录态取 @AuthenticationPrincipal AppUser（platform 域实体）；
+         红线：collab 禁 import prd/eng（ArchUnit R4），platform 单向依赖允许（§1.4） -->
+    <dependency>
+      <groupId>cn.teamone</groupId>
+      <artifactId>teamone-platform</artifactId>
+    </dependency>
+    <!-- W3-③b: 实体/仓库（JPA）+ ConversationService 延迟归档 ZSET（StringRedisTemplate） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    <!-- W3-③b: MessageService 幂等/成员/归档 纯逻辑单测（mock 仓库） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

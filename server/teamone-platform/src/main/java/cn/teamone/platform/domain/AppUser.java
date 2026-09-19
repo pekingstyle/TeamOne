@@ -44,6 +44,13 @@ public class AppUser {
     @Column(nullable = false, columnDefinition = "text")
     private Status status = Status.ACTIVE;
 
+    /**
+     * 界面主题偏好（R-11，V20）：light / dark / system；NULL 视同 system（老用户无值不报错）。
+     * 仅经 PUT /api/v1/me 由本人修改，管理端不代改。
+     */
+    @Column(name = "theme_preference")
+    private String themePreference;
+
     public UUID getId() { return id; }
     public String getUsername() { return username; }
     public void setUsername(String v) { this.username = v; }
@@ -63,4 +70,6 @@ public class AppUser {
     public void setDailyCapacityHours(int v) { this.dailyCapacityHours = v; }
     public Status getStatus() { return status; }
     public void setStatus(Status v) { this.status = v; }
+    public String getThemePreference() { return themePreference; }
+    public void setThemePreference(String v) { this.themePreference = v; }
 }

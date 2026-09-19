@@ -169,8 +169,18 @@ export interface Requirement {
   topicId?: string
   createdAt: string
   updatedAt: string
+  /** 后端乐观锁版本（dogfooding：PRD 正文 PUT 需带 If-Match） */
+  version?: number
   acceptedAt?: string
   deliveredAt?: string
+  /** Markdown 需求详细正文内容（支持富文本/表格/代码块规范） */
+  docContent?: string
+  /** 上传的原始文档文件名（如 PRD-需求规格.md / 架构设计.docx） */
+  docFileName?: string
+  /** 文档类型标识（markdown / word / text 等） */
+  docFileType?: string
+  /** 关联的需求文档附件清单（文件名、大小、下载地址） */
+  attachments?: { id?: string; name: string; size: number | string; url?: string; uploadedAt: string }[]
 }
 
 // ==================== L6 工作项（任务/测试任务/缺陷） ====================
@@ -542,15 +552,6 @@ export interface Message {
   pending?: boolean
 }
 
-export interface ActivityEvent {
-  id: string
-  type: 'commit' | 'mr' | 'workitem' | 'pipeline' | 'release' | 'deploy' | 'topic' | 'conflict'
-  text: string
-  actorId: string
-  at: string
-  target?: { page: string; id?: string }
-}
-
 // ==================== 冲突检测 ====================
 
 export type ConflictType =
@@ -574,3 +575,4 @@ export type PageId =
   | 'goals' | 'requirements' | 'roadmap' | 'tasks' | 'defects' | 'delivery'
   | 'topics' | 'im' | 'team'
   | 'repos' | 'repo' | 'review' | 'mr' | 'pipelines' | 'pipeline'
+  | 'settings'

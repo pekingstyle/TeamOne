@@ -16,5 +16,22 @@
       <groupId>cn.teamone</groupId>
       <artifactId>teamone-shared</artifactId>
     </dependency>
+    <!-- M2-INC-1 W2：OutboxWriter/AuditService SPI（架构设计 §1.4 允许 insight→platform 单向，
+         ArchUnit R6 允许范围：platform + shared，零 prd/collab/eng/app import） -->
+    <dependency>
+      <groupId>cn.teamone</groupId>
+      <artifactId>teamone-platform</artifactId>
+    </dependency>
+    <!-- M2-INC-1 W2：只读映射实体/仓库 + conflict_snapshot 快照写（JPA） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- M2-INC-1 W2：ConflictEngine 原型基线单测（纯逻辑，无 Spring） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

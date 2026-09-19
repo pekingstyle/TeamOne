@@ -1,0 +1,125 @@
+# TeamOne 生产与私有化一键部署 Docker Compose 配置（V-18）
+# 适用于企业内网、隔离离线环境与独立服务器私有化部署
+name: teamone-prod
+
+services:
+  # 1. 核心持久化关系数据库
+  postgres:
+    image: postgres:18-alpine
+    container_name: teamone-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${TEAMONE_DB_NAME:-teamone}
+      POSTGRES_USER: ${TEAMONE_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${TEAMONE_DB_PASSWORD:-teamone-local}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEAMONE_DB_USER:-postgres} -d ${TEAMONE_DB_NAME:-teamone}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 2. 分布式缓存与事件流引擎
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: teamone-valkey
+    restart: always
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkeydata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 3. 对象存储（附件、文档、备份冷存）
+  minio:
+    image: minio/minio:latest
+    container_name: teamone-minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-teamone}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-teamone-dev-minio}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 4. TeamOne 统一服务端应用（Spring Boot + 8子模块）
+  server:
+    image: teamone-server:latest
+    container_name: teamone-server
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      TEAMONE_DB_URL: jdbc:postgresql://postgres:5432/${TEAMONE_DB_NAME:-teamone}
+      TEAMONE_DB_USER: ${TEAMONE_DB_USER:-postgres}
+      TEAMONE_DB_PASSWORD: ${TEAMONE_DB_PASSWORD:-teamone-local}
+      TEAMONE_VALKEY_HOST: valkey
+      TEAMONE_VALKEY_PORT: 6379
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-teamone}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-teamone-dev-minio}
+      MINIO_BUCKET: ${MINIO_BUCKET:-teamone-dev}
+      TEAMONE_GIT_ROOT: /gitrepos
+      SERVER_PORT: 8080
+    volumes:
+      - gitrepos:/gitrepos
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # 5. 反向代理与网关接入（TLS + WSS + 静态前端 SPA）
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: teamone-nginx
+    restart: always
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/tls:/etc/nginx/tls:ro
+    environment:
+      TEAMONE_BACKEND_ORIGIN: http://server:8080
+
+  # 6. 可选可观测性指标采集监控服务
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: teamone-prometheus
+    restart: always
+    profiles: ["monitoring"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+volumes:
+  pgdata:
+  valkeydata:
+  miniodata:
+  gitrepos:

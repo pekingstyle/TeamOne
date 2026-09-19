@@ -11,4 +11,12 @@
   <artifactId>teamone-shared</artifactId>
   <name>TeamOne :: Shared</name>
   <description>事件信封/错误码/权限注解等零业务横切件（不依赖 Spring Web）</description>
+
+  <dependencies>
+    <!-- W3EventHandler 签名用 JsonNode（Jackson 非 Spring，R1 纯净性允许；版本由 Boot parent 管理） -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+  </dependencies>
 </project>

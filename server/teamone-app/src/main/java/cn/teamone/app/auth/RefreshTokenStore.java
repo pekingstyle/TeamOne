@@ -25,4 +25,12 @@ public interface RefreshTokenStore {
 
     /** 吊销（登出/旋转/踢人下线的原子操作；对不存在的 hash 静默幂等） */
     void revoke(String tokenHash);
+
+    /**
+     * 作废某用户的全部有效刷新令牌（R-11 改密后强制其他设备下线；对无令牌用户静默幂等）。
+     *
+     * @param userId     目标用户
+     * @param exceptHash 豁免的令牌哈希（当前设备保持登录，null/空白=全部作废）
+     */
+    void revokeAllForUser(UUID userId, String exceptHash);
 }

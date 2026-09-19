@@ -19,12 +19,18 @@ spring:
   jackson:
     default-property-inclusion: non_null
   # Valkey（Redis 协议兼容；容器在 WSL 内，Windows 宿主经 localhost 转发访问）
-  # 未启动 Valkey 时服务照常运行：ACL 缓存自动降级直查（RedisDecisionCache 容错）
+  # 未启动 Valkey 时服务照常运行：ACL 缓存自动降级直查（RedisDecisionCache 容错），
+  # Outbox relay / EventConsumer 各自记 WARN + 退避（W3 红线：health 不耦合 Valkey）
   data:
     redis:
       host: ${TEAMONE_VALKEY_HOST:localhost}
       port: ${TEAMONE_VALKEY_PORT:6379}
       timeout: 2s
+  # @Scheduled 线程池：EventConsumer 长阻塞消费常驻 1 线程 + OutboxRelay 500ms 1 线程，留余量
+  task:
+    scheduling:
+      pool:
+        size: 4
 
 server:
   port: ${SERVER_PORT:8080}
@@ -33,18 +39,36 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
   health:
-    # W1: Valkey 未上线，缓存可降级 → Redis 健康检查暂关（避免 health 503）。
-    # W3 接入 Outbox Stream 后恢复为 true（届时 Valkey 变为强依赖）。
+    # Valkey 为可降级依赖（缓存直查/relay 退避/consumer 退避）→ health 不随其 DOWN（W3 红线 4）
     redis:
       enabled: false
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
 teamone:
+  seed:
+    # R-13 种子开关一拆二（全栈评审必改①/D7）：
+    #   enabled —— 账号/ACL/引导种子（DevSeeder），默认 true 且任何环境不关（关掉将无账号可登录）
+    #   demo    —— 演示数据种子（ProductSeeder/MrDemoSeeder），默认 true 保持现有行为；
+    #              dev 库 dogfooding 时置 false，以平台自建真实工作项驱动
+    enabled: ${TEAMONE_SEED_ENABLED:true}
+    demo: ${TEAMONE_SEED_DEMO:true}
+  crypto:
+    # R-12/D6：platform.setting 秘密值 AES-256-GCM 密钥（Base64 编码的 32 字节）。
+    # 仅经环境变量注入（不入库不进 git）；未配置时启动仅 WARN，首次写入秘密行才 fail-fast 提示配置
+    key: ${TEAMONE_CRYPTO_KEY:}
   jwt:
     secret: ${TEAMONE_JWT_SECRET:dev-secret-change-me-0123456789abcdef-please}
     access-ttl-minutes: 15
@@ -55,9 +79,54 @@ teamone:
   security:
     # OpenAPI 端点公开开关：dev 阶段 true；M3 私有化交付收紧为 false
     openapi-public: true
+  git:
+    # 自研 Git 内核（07 决策 D-2026-09-11-B）：bare repo 根目录 + post-receive 回调共享口令
+    # 未配置时服务正常起（GitPort 调用时才失败 / hook 端点 401 fail-closed），W4 收口由总监在 .env 配置
+    root: ${TEAMONE_GIT_ROOT:}
+    hook-token: ${TEAMONE_HOOK_TOKEN:}
+  mr:
+    gate:
+      # 单测门禁双阈值（百分比）：整体覆盖率 / patch（增量）覆盖率——
+      # MergeRequestService 单测报告判定与 MR 详情 gateConfig 透出的唯一口径源
+      total-coverage: ${TEAMONE_MR_GATE_TOTAL_COVERAGE:60}
+      patch-coverage: ${TEAMONE_MR_GATE_PATCH_COVERAGE:80}
   cache:
     # ACL 决策缓存 TTL（架构设计 §1.5：5min 兜底；W3 acl.changed 事件精准失效）
     acl-ttl-seconds: 300
+  event:
+    # Outbox Stream 分片数：shard = floorMod(aggregate_id.hashCode(), shards)，同聚合同分片保序
+    shards: 4
+    # XREADGROUP BLOCK 毫秒（0=永久阻塞旧语义）：数据到达即醒，本值只决定「消息恰好落在两轮
+    # 消费间隙」的最坏等待 + 优雅停机汇合周期。IM 延迟诊断批（2026-09-14）由 5000 降至 500：
+    # 在线推送已改由发送事务 afterCommit 直推（teamone.im.fast-fanout，05 §推拉结合 L3 加速器），
+    # 本事件链降级为兜底通道，兜底端到端最坏等待从 ~1s 级降至 ~350ms（06 §10 停机语义不变）
+    block-ms: 500
+    # 消费组内实例名（UUID 短码；TEAMONE_CONSUMER_ID 环境变量可覆写）
+    consumer-id: ${TEAMONE_CONSUMER_ID:}
+  outbox:
+    # OutboxRelay 轮询间隔毫秒（IM 延迟诊断批参数化，原硬编码 500）：在线直推不经过本轮询，
+    # 该值只影响兜底链路的投递等待（平均=间隔/2）；负载高峰可下调，勿超 1000
+    relay-interval-ms: ${TEAMONE_OUTBOX_RELAY_INTERVAL_MS:500}
+  topic:
+    # 对象关闭后话题延迟归档缓冲（06 §3 W3 话题自动化，③b 扫描器用；V-5 验证时设 1 分钟）
+    archive-delay-minutes: ${TEAMONE_TOPIC_ARCHIVE_DELAY_MINUTES:1440}
+  ws:
+    # WS 扇出 Pub/Sub 频道（③b 用）
+    fanout-channel: teamone:ws:fanout
+  im:
+    # 消息撤回时间窗（小时，S-6 拍板；≤0=不限窗——测试撤旧消息可配 0）
+    withdraw-window-hours: ${TEAMONE_IM_WITHDRAW_WINDOW_HOURS:24}
+    # 发送事务 afterCommit L3 直推开关（IM 延迟诊断批）：true=提交即推 message/unread 帧
+    # （在线用户零轮询延迟），并以 SETNX teamone:im:pushed:{msgId} EX 60 防与事件链重复扇出；
+    # false=退化回纯事件链（诊断对照基线）。直推失败自动降级走事件链，至少一次不丢
+    fast-fanout: ${TEAMONE_IM_FAST_FANOUT:true}
+  minio:
+    # MinIO 两步制（05 §9.3；compose minio 服务 host 网络直绑 9000/9001）
+    # 凭据经 .env 注入（.env.example MINIO_*），默认值与 compose 缺省对齐
+    endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}
+    access-key: ${MINIO_ACCESS_KEY:teamone}
+    secret-key: ${MINIO_SECRET_KEY:teamone-dev-minio}
+    bucket: ${MINIO_BUCKET:teamone-dev}
 
 logging:
   level:

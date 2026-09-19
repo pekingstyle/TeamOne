@@ -28,6 +28,8 @@
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
     <!-- W1: Valkey（Redis 协议兼容）——ACL 决策缓存 / 刷新令牌存储 / W3 起的 Outbox Stream 扇出 -->
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-redis</artifactId></dependency>
+    <!-- M3-INC-1 (V-17): 生产监控与指标采集 (Prometheus) -->
+    <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-registry-prometheus</artifactId></dependency>
     <!-- W1: OpenAPI 契约（架构设计 §3.3：字段级契约由 springdoc 生成） -->
     <dependency><groupId>org.springdoc</groupId><artifactId>springdoc-openapi-starter-webmvc-ui</artifactId></dependency>
 
@@ -61,6 +63,10 @@
         <artifactId>maven-failsafe-plugin</artifactId>
         <configuration>
           <skipITs>${skipITs}</skipITs>
+          <!-- IT 容器化执行（WSL docker.sock / CI）时 Mockito inline MockMaker 需要
+               允许 byte-buddy 自附着，否则报 "JDK does not supply a working agent
+               attachment mechanism"；-XX:+EnableDynamicAgentLoading 兼容新 JDK 提示 -->
+          <argLine>-Djdk.attach.allowAttachSelf=true -XX:+EnableDynamicAgentLoading</argLine>
         </configuration>
         <executions>
           <execution>

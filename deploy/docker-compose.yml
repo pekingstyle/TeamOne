@@ -1,6 +1,9 @@
 # TeamOne 附属组件（D-2026-09-11-B：Git 内核自研，已移除 gitea/runner）
-# WSL 为 mirrored 网络模式，docker 端口发布在该模式下数据路径不通，故容器用 host 网络直绑。
+# WSL 为 mirrored 网络模式，docker 端口发布在该模式下数据路径不通，故容器用 host 网络直绑
+# （06 §6 教训：docker -p 端口发布断裂必须 host 网络）。
 # 仓库存储为本地 bare repo（见 deploy/git-init-repo.sh）；CI 为自研（deploy/ci.sh）。
+# nginx TLS 终结 + WSS 反代（INC-2 T-6）：TEAMONE_BACKEND_ORIGIN 禁 localhost（host 网络
+# 容器内 localhost=WSL 自身），WSL→Windows 后端用 LAN IP，经 .env 可配。
 # 用法（WSL 内）: docker compose -f /mnt/c/.../deploy/docker-compose.yml up -d
 name: teamone
 
@@ -19,13 +22,26 @@ services:
     container_name: teamone-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-teamone}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-teamone-dev-minio}
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-teamone}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-teamone-dev-minio}
+    network_mode: host          # 9000(S3 API)/9001(console) 直绑 WSL（-p 断裂教训，同上）
     volumes:
       - miniodata:/data
+    restart: unless-stopped
+
+  # TLS 终结 + WSS 反代（INC-2 T-6，验收路径 wss://localhost/ws 与 https://localhost/api/*）
+  # 证书：先跑 deploy/nginx/gen-dev-cert.sh 生成（tls/ gitignored 不内置）
+  # 官方镜像 entrypoint 对 /etc/nginx/templates/*.template 做 envsubst 后装载
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: teamone-nginx
+    network_mode: host          # 443/80 直绑 WSL（镜像模式 Windows localhost 可达）
+    environment:
+      # 禁 localhost：host 网络内 localhost=WSL 自身；WSL→Windows 后端走 LAN IP（W1 预检已证通）
+      TEAMONE_BACKEND_ORIGIN: ${TEAMONE_BACKEND_ORIGIN:-http://192.168.2.101:8080}
+    volumes:
+      - ./nginx/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/tls:/etc/nginx/tls:ro
     restart: unless-stopped
 
 volumes:

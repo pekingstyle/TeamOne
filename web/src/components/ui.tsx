@@ -1,12 +1,17 @@
 // TeamOne 原型 · 共享 UI 基础组件
 import type { ReactNode } from 'react'
+import { useMemo } from 'react'
 import { userById } from '../data/store'
+import { toBrief, useUserBriefs } from '../api/users'
 import type { RunStatus } from '../data/types'
 
-/** 圆形文字头像 */
+/** 圆形文字头像（真实用户走 /users/briefs（UT-34），未命中回退 store 本地用户） */
 export function Avatar({ userId, size = 28 }: { userId: string; size?: number }) {
-  const u = userById(userId)
+  const { data } = useUserBriefs()
+  const briefs = useMemo(() => toBrief(data), [data])
+  const u = briefs.get(userId) ?? userById(userId)
   if (!u) return <span className="inline-flex items-center justify-center rounded-full bg-ink-700 text-txt-mid" style={{ width: size, height: size, fontSize: size * 0.42 }}>?</span>
+  const online = 'online' in u && (u as { online?: boolean }).online
   return (
     <span
       title={`${u.name} · ${u.title}`}
@@ -14,7 +19,7 @@ export function Avatar({ userId, size = 28 }: { userId: string; size?: number })
       style={{ width: size, height: size, fontSize: size * 0.42, background: u.color }}
     >
       {u.name.slice(-1)}
-      {u.online && (
+      {online && (
         <span className="absolute -right-0 -bottom-0 rounded-full border-2 border-canvas bg-ok" style={{ width: size * 0.28, height: size * 0.28 }} />
       )}
     </span>
@@ -151,9 +156,25 @@ export function Bar({ value, tone = 'brand', className = '' }: { value: number; 
   )
 }
 
-/** 空状态 */
-export function Empty({ text }: { text: string }) {
-  return <div className="flex flex-col items-center justify-center gap-2 py-16 text-txt-low"><span className="text-3xl">🗂️</span><span className="text-sm">{text}</span></div>
+/**
+ * 空状态 / 加载态（P2-1 统一口径）
+ * - text：主文案（如「没有符合条件的缺陷」；加载态用「××加载中…」）
+ * - size：sm 用于卡片内/行内加载与空态，md 用于整页空态（默认）
+ * - icon：可选自定义图标节点；传 <Spinner /> 即为「转圈+文字」加载态
+ *   例：<Empty text="快照加载中…" size="sm" icon={<Loader2 size={18} className="animate-spin text-brand" />} />
+ */
+export function Empty({ text, size = 'md', icon }: { text: string; size?: 'sm' | 'md'; icon?: ReactNode }) {
+  return (
+    <div className={`flex flex-col items-center justify-center gap-2 text-txt-low ${size === 'sm' ? 'py-8' : 'py-16'}`}>
+      {icon ?? <span className="text-3xl">🗂️</span>}
+      <span className="text-sm">{text}</span>
+    </div>
+  )
+}
+
+/** 统一加载图标（配合 Empty 使用，转圈+文字） */
+export function Spinner({ size = 18 }: { size?: number }) {
+  return <span className="inline-block animate-spin rounded-full border-2 border-line border-t-brand align-middle" style={{ width: size, height: size }} />
 }
 
 /** 优先级徽章 */

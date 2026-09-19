@@ -3,7 +3,7 @@
 // 数据模型依据 docs/v2/03-产品设计文档-v2.md §2；冲突检测依据 §5.1；话题事件表依据 §5.2
 import { useSyncExternalStore } from 'react'
 import type {
-  ActivityEvent, Artifact, Baseline, Branch, Channel, Commit, ConflictItem,
+  Artifact, Baseline, Branch, Channel, Commit, ConflictItem,
   Component, Defect, DefectSeverity, DeployEnv, Department, DiffLine, FileNode, GoalStatus,
   MergeRequest, Message, Pipeline, Product, Release, Repo, Requirement, ResourcePermission,
   RoadmapItem, Sprint, StrategicGoal, Task, TestTask, Topic, TopicMessage, TopicTargetType,
@@ -598,18 +598,8 @@ export const messages: Message[] = [
 ]
 
 // ---------- 动态 ----------
-export const activities: ActivityEvent[] = [
-  { id: 'ac1', type: 'conflict', text: '冲突检测：发现 3 个红色冲突（u3 跨产品超载 / T1-131 Deadline 越级 / 依赖倒挂）', actorId: 'system', at: mins(30), target: { page: 'conflicts' } },
-  { id: 'ac2', type: 'workitem', text: '苏芮 创建致命缺陷 D-88 · v2.4.0 已被阻塞，发布锁定', actorId: 'u4', at: mins(60 * 26), target: { page: 'defects', id: 'w22' } },
-  { id: 'ac3', type: 'topic', text: '话题「D-88 熔断死锁」自动创建，已拉入 4 名干系人', actorId: 'system', at: mins(60 * 26), target: { page: 'topics', id: 'top1' } },
-  { id: 'ac4', type: 'commit', text: '赵子轩 推送 2 个提交到 feat/executor-retry（+400 / -32）', actorId: 'u3', at: mins(23), target: { page: 'repo', id: 'r1' } },
-  { id: 'ac5', type: 'pipeline', text: '流水线 #312 运行成功 · 284s · 含单测 1284 例（0 失败）', actorId: 'u3', at: mins(18), target: { page: 'pipeline', id: 'p1' } },
-  { id: 'ac6', type: 'mr', text: '周天磊 批准了 !42 执行器调度失败重试与熔断', actorId: 'u5', at: mins(88), target: { page: 'mr', id: 'mr1' } },
-  { id: 'ac7', type: 'workitem', text: '赵子轩 修复 D-87（严重）→ 待回归；v2.4.0 仍被 D-88 阻塞', actorId: 'u3', at: mins(120), target: { page: 'defects', id: 'w23' } },
-  { id: 'ac8', type: 'topic', text: '话题「D-86 看板环图卡顿」随缺陷关闭自动归档', actorId: 'system', at: mins(60 * 25), target: { page: 'topics', id: 'top7' } },
-  { id: 'ac9', type: 'release', text: '周天磊 提交基线 BL-R2.4-分配基线 审批（1/2 批准）', actorId: 'u5', at: mins(60 * 24), target: { page: 'repo', id: 'r1' } },
-  { id: 'ac10', type: 'pipeline', text: '定时流水线 #57 研发周报生成完毕并推送 IM', actorId: 'u1', at: mins(60 * 3), target: { page: 'pipeline', id: 'p5' } },
-]
+// D-91 收口：store.activities/addActivity 原型动态流已删除——工作台「最近动态」改由
+// DashboardPage 直连真实数据源（GET /notifications + GET /work-items 合并排序）。
 
 // ============================================================
 // 订阅
@@ -791,10 +781,6 @@ function sprintEnd(sprintId: string): string {
 // ============================================================
 let idSeq = 1000
 const nextId = (p: string) => `${p}${idSeq++}`
-function addActivity(a: Omit<ActivityEvent, 'id' | 'at'>) {
-  activities.unshift({ ...a, id: nextId('ac'), at: fmt(new Date()) })
-  if (activities.length > 40) activities.pop()
-}
 function addSystemMsg(channelId: string, text: string, attachments?: Message['attachments']) {
   messages.push({ id: nextId('m'), channelId, authorId: 'system', text, createdAt: fmt(new Date()), attachments })
 }
@@ -879,7 +865,6 @@ export function createTopic(input: { targetType: TopicTargetType; targetId: stri
   if (!input.autoCreated) { topic.autoCreated = false; topic.autoCreateReason = undefined }
   if (input.title) topic.title = input.title
   if (input.firstMessage) topic.messages.push({ id: nextId('tm'), authorId: CURRENT_USER_ID, text: input.firstMessage, createdAt: fmt(new Date()) })
-  addActivity({ type: 'topic', text: `${userById(CURRENT_USER_ID)?.name} 发起话题「${topic.title}」，拉入 ${topic.participantIds.length} 名干系人`, actorId: CURRENT_USER_ID, target: { page: 'topics', id: topic.id } })
   bump()
   return topic
 }
@@ -893,11 +878,39 @@ export function addTopicMessage(topicId: string, text: string) {
   bump()
 }
 
+/** 发送频道/私聊消息（支持前端离线或演示双向互动） */
+export function addChannelMessage(channelId: string, authorId: string, text: string, attachments?: Message['attachments']) {
+  if (!text.trim()) return
+  const msg: Message = {
+    id: nextId('m'),
+    channelId,
+    authorId,
+    text: text.trim(),
+    createdAt: fmt(new Date()),
+    attachments,
+  }
+  messages.push(msg)
+  const ch = channelById(channelId)
+  if (ch && authorId !== CURRENT_USER_ID) {
+    ch.unread = (ch.unread ?? 0) + 1
+  }
+  bump()
+  return msg
+}
+
+/** 标记频道/私聊已读 */
+export function markChannelRead(channelId: string) {
+  const ch = channelById(channelId)
+  if (ch && ch.unread) {
+    ch.unread = 0
+    bump()
+  }
+}
+
 export function reopenTopic(topicId: string) {
   const t = topicById(topicId)
   if (!t) return
   t.status = 'active'; t.archivedReason = undefined; t.archivedAt = undefined
-  addActivity({ type: 'topic', text: `${userById(CURRENT_USER_ID)?.name} 重开了话题「${t.title}」`, actorId: CURRENT_USER_ID, target: { page: 'topics', id: topicId } })
   bump()
 }
 
@@ -927,7 +940,6 @@ export function setWorkItemStatus(id: string, status: string) {
     recalcReleaseBlocked(d.blockedReleaseId)
     if (status === '已关闭') {
       archiveTopicInternal(d.topicId, 'object_closed', `缺陷 ${d.key} 已关闭。`)
-      addActivity({ type: 'topic', text: `话题「${topicById(d.topicId ?? '')?.title ?? d.key}」随缺陷关闭自动归档`, actorId: 'system', target: { page: 'topics', id: d.topicId } })
     }
     if (status === '重新打开' && d.topicId) {
       const t = topicById(d.topicId)
@@ -937,7 +949,6 @@ export function setWorkItemStatus(id: string, status: string) {
   if ((it.type === 'task' || it.type === 'testtask') && status === 'closed') {
     archiveTopicInternal(it.topicId, 'object_closed')
   }
-  addActivity({ type: 'workitem', text: `陈墨 将 ${it.key} 状态变更为「${it.type === 'defect' ? status : workItemStatusText[status as WorkItemStatus]}」`, actorId: CURRENT_USER_ID, target: { page: it.type === 'defect' ? 'defects' : 'tasks', id: id } })
   bump()
 }
 
@@ -957,7 +968,6 @@ export function completeSprint(sprintId: string) {
   const topic = topics.find((t) => t.targetType === 'sprint' && t.targetId === sprintId)
   const openCount = workItems.filter((w) => w.sprintId === sprintId && w.status !== 'done' && w.status !== 'closed').length
   archiveTopicInternal(topic?.id, 'sprint_ended', `迭代结束，未关闭工作项 ${openCount} 件顺延。`)
-  addActivity({ type: 'workitem', text: `陈墨 结束迭代「${sp.name}」，话题已自动归档`, actorId: CURRENT_USER_ID, target: { page: 'tasks' } })
   bump()
 }
 
@@ -970,7 +980,6 @@ export function publishRelease(releaseId: string): { ok: boolean; blockers: Defe
   rel.releasedAt = fmt(new Date())
   const topic = topics.find((t) => t.targetType === 'release' && t.targetId === releaseId)
   archiveTopicInternal(topic?.id, 'release_released', `${rel.name} 正式发布！发布说明已同步知识库。`)
-  addActivity({ type: 'release', text: `陈墨 正式发布 ${rel.name}`, actorId: CURRENT_USER_ID, target: { page: 'delivery' } })
   addSystemMsg('c3', `🎉 ${rel.name} 正式发布！`, [{ type: 'release', refId: releaseId, label: rel.name }])
   bump()
   return { ok: true, blockers: [] }
@@ -1009,7 +1018,6 @@ export function createWorkItem(input: { type: 'task' | 'testtask' | 'defect'; ti
   const reason = input.type === 'defect' && (input.severity === '致命' || input.severity === '严重') ? 'severity_high' : 'object_created'
   const topic = autoCreateTopic(input.type, item.id, reason)
   item.topicId = topic.id
-  addActivity({ type: 'workitem', text: `陈墨 创建 ${item.key} · ${item.title}，并自动创建话题（干系人 ${topic.participantIds.length} 人）`, actorId: CURRENT_USER_ID, target: { page: input.type === 'defect' ? 'defects' : 'tasks', id: item.id } })
   bump()
   return item
 }
@@ -1022,7 +1030,6 @@ export function reviewMr(mrId: string, state: 'approved' | 'changes_requested') 
   const r = mr.reviewers.find((x) => x.userId === CURRENT_USER_ID)
   if (r) r.state = state
   mr.comments.push({ id: nextId('c'), authorId: CURRENT_USER_ID, text: state === 'approved' ? '已批准 ✔ 含单测检测与基线核查。' : '请修改后再评审。', createdAt: fmt(new Date()) })
-  addActivity({ type: 'mr', text: `陈墨 ${state === 'approved' ? '批准' : '请求修改'}了 !${mr.number} ${mr.title}`, actorId: CURRENT_USER_ID, target: { page: 'mr', id: mrId } })
   bump()
 }
 export function addMrComment(mrId: string, text: string) {
@@ -1035,7 +1042,6 @@ export function exemptMrUnitTest(mrId: string, reason: string) {
   const mr = mrById(mrId)
   if (!mr || !reason.trim()) return
   mr.unitTestCheck = { ...mr.unitTestCheck, gatePassed: true, exempt: { reason, approvedById: CURRENT_USER_ID } }
-  addActivity({ type: 'mr', text: `陈墨 批准 !${mr.number} 单测豁免：${reason}`, actorId: CURRENT_USER_ID, target: { page: 'mr', id: mrId } })
   bump()
 }
 export function resolveMrConflict(mrId: string, filePath: string, solution: string) {
@@ -1063,7 +1069,6 @@ export function mergeMr(mrId: string): { ok: boolean; reasons: string[] } {
   if (mr.conflictFiles.length > 0) reasons.push('存在未解决冲突文件')
   if (reasons.length > 0) return { ok: false, reasons }
   mr.status = 'merged'
-  addActivity({ type: 'mr', text: `陈墨 合并了 !${mr.number} ${mr.title} → ${mr.targetBranch}`, actorId: CURRENT_USER_ID, target: { page: 'mr', id: mrId } })
   addSystemMsg('c2', `!${mr.number} ${mr.title} 已合入 ${mr.targetBranch}`, [{ type: 'mr', refId: mrId, label: `!${mr.number}` }])
   const wi = mr.linkedWorkItemKey ? workItemByKey(mr.linkedWorkItemKey) : undefined
   if (wi && wi.type === 'task' && wi.status === 'in_review') {
@@ -1088,7 +1093,6 @@ export function approveBaseline(baselineId: string) {
         other.supersededById = b.id
       }
     }
-    addActivity({ type: 'release', text: `基线 ${b.name} 已定版冻结（${b.approverIds.length} 人批准）`, actorId: CURRENT_USER_ID, target: { page: 'repo', id: b.repoId } })
   }
   bump()
 }
@@ -1109,6 +1113,8 @@ export function createRequirement(input: {
   title: string; description?: string; priority?: 'P0' | 'P1' | 'P2' | 'P3'
   productId?: string; ownerId?: string; reviewerIds: string[]
   goalId?: string; releaseId?: string; estimatePoints?: number
+  docContent?: string; docFileName?: string; docFileType?: string
+  attachments?: { id?: string; name: string; size: number | string; url?: string; uploadedAt: string }[]
 }): Requirement {
   const n = 9 + requirements.length
   const rq: Requirement = {
@@ -1116,12 +1122,76 @@ export function createRequirement(input: {
     status: 'draft', priority: input.priority ?? 'P2', productId: input.productId ?? 'p1',
     proposerId: CURRENT_USER_ID, ownerId: input.ownerId ?? 'u6', reviewerIds: input.reviewerIds,
     reviews: [], goalId: input.goalId, releaseId: input.releaseId, estimatePoints: input.estimatePoints,
+    docContent: input.docContent, docFileName: input.docFileName, docFileType: input.docFileType,
+    attachments: input.attachments ?? [],
     createdAt: fmt(new Date()), updatedAt: fmt(new Date()),
   }
   requirements.unshift(rq)
-  addActivity({ type: 'workitem', text: `陈墨 创建需求 ${rq.key} · ${rq.title}（草稿）`, actorId: CURRENT_USER_ID, target: { page: 'requirements', id: rq.id } })
   bump()
   return rq
+}
+
+/**
+ * 更新需求（补全/修改 PRD 正文、附件文档或基本字段）
+ * @param id 需求唯一标识
+ * @param patch 需更新的字段子集
+ */
+export function updateRequirement(id: string, patch: Partial<Requirement>): void {
+  const r = requirements.find((x) => x.id === id)
+  if (!r) return
+  Object.assign(r, patch, { updatedAt: fmt(new Date()) })
+  bump()
+}
+
+/**
+ * 创建战略目标（L1 Goal Setting）：自增生成 GOAL-x Key 并通知协同
+ * @param input 目标初始参数（名称、周期、负责人、衡量口径、关联产品等）
+ * @returns 新建的战略目标实体
+ */
+export function createGoal(input: {
+  name: string
+  period: string
+  ownerId: string
+  targetMetric?: string
+  productIds: string[]
+  deadline?: string
+  roadmapItemIds?: string[]
+  departmentId?: string
+  status?: GoalStatus
+}): StrategicGoal {
+  const n = goals.length + 1
+  const goal: StrategicGoal = {
+    id: nextId('g'),
+    key: `GOAL-${n}`,
+    name: input.name.trim(),
+    departmentId: input.departmentId ?? 'd1',
+    period: input.period,
+    ownerId: input.ownerId,
+    targetMetric: input.targetMetric,
+    progress: 0,
+    status: input.status ?? 'active',
+    productIds: input.productIds.length > 0 ? input.productIds : ['p1'],
+    roadmapItemIds: input.roadmapItemIds ?? [],
+    deadline: input.deadline,
+    createdAt: fmt(new Date()),
+  }
+  goals.unshift(goal)
+  const topic = autoCreateTopic('goal', goal.id, 'object_created')
+  goal.topicId = topic.id
+  bump()
+  return goal
+}
+
+/**
+ * 更新战略目标配置
+ * @param id 目标唯一标识
+ * @param patch 目标修改属性补丁
+ */
+export function updateGoal(id: string, patch: Partial<StrategicGoal>): void {
+  const g = goalById(id)
+  if (!g) return
+  Object.assign(g, patch)
+  bump()
 }
 
 /** 提交评审：自动生成评审话题并按干系人规则拉人 */
@@ -1134,7 +1204,6 @@ export function submitRequirement(id: string) {
     const topic = autoCreateTopic('requirement', rq.id, 'object_created')
     rq.topicId = topic.id
   }
-  addActivity({ type: 'workitem', text: `陈墨 提交需求 ${rq.key} 评审，评审人：${rq.reviewerIds.map((u) => userById(u)?.name).join('、')}`, actorId: CURRENT_USER_ID, target: { page: 'requirements', id } })
   bump()
 }
 
@@ -1146,7 +1215,6 @@ export function reviewRequirement(id: string, result: 'approved' | 'rejected', c
   rq.updatedAt = fmt(new Date())
   if (result === 'rejected') {
     rq.status = 'rejected'
-    addActivity({ type: 'workitem', text: `陈墨 驳回需求 ${rq.key}：${comment}`, actorId: CURRENT_USER_ID, target: { page: 'requirements', id } })
     bump()
     return
   }
@@ -1158,9 +1226,6 @@ export function reviewRequirement(id: string, result: 'approved' | 'rejected', c
       const topic = autoCreateTopic('requirement', rq.id, 'object_created')
       rq.topicId = topic.id
     }
-    addActivity({ type: 'workitem', text: `需求 ${rq.key} 评审通过并受理${rq.releaseId ? `，排入 ${releaseById(rq.releaseId)?.name ?? '版本'}` : ''}`, actorId: CURRENT_USER_ID, target: { page: 'requirements', id } })
-  } else {
-    addActivity({ type: 'workitem', text: `陈墨 批准需求 ${rq.key}（待其余评审人：${pending.map((u) => userById(u)?.name).join('、')}）`, actorId: CURRENT_USER_ID, target: { page: 'requirements', id } })
   }
   bump()
 }
@@ -1173,7 +1238,6 @@ export function scheduleRequirement(id: string, patch: { roadmapItemId?: string;
   if (patch.releaseId !== undefined) rq.releaseId = patch.releaseId
   if (patch.sprintId !== undefined) rq.sprintId = patch.sprintId
   rq.updatedAt = fmt(new Date())
-  addActivity({ type: 'workitem', text: `陈墨 将 ${rq.key} 排入 ${releaseById(rq.releaseId ?? '')?.name ?? '版本'}${rq.sprintId ? ` · ${sprintById(rq.sprintId)?.name ?? ''}` : ''}`, actorId: CURRENT_USER_ID, target: { page: 'requirements', id } })
   bump()
 }
 
@@ -1222,7 +1286,6 @@ export function runPipeline(pipelineId: string) {
       p.status = 'passed'
       p.durationSec = total
       const num = p.title.split('·')[0].trim().slice(1)
-      addActivity({ type: 'pipeline', text: `陈墨 手动触发流水线 #${num} 运行成功`, actorId: CURRENT_USER_ID, target: { page: 'pipeline', id: p.id } })
       addSystemMsg('c3', `流水线 #${num} 手动触发运行成功 · ${p.branch}`, [{ type: 'pipeline', refId: p.id, label: p.title.split('·')[0].trim() }])
       bump()
       return
@@ -1250,7 +1313,6 @@ export function deployToEnv(envId: string, version: string, releaseId?: string) 
       const rel = releaseById(releaseId)
       if (rel?.envProgress) rel.envProgress[envId] = 'done'
     }
-    addActivity({ type: 'deploy', text: `陈墨 将 ${version} 部署至【${env.name}环境】`, actorId: CURRENT_USER_ID, target: { page: 'delivery' } })
     addSystemMsg('c3', `「${env.name}环境」已完成部署 ${version}`, releaseId ? [{ type: 'release', refId: releaseId, label: version }] : undefined)
     bump()
   }, 1800)

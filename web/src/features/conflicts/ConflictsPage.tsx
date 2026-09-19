@@ -1,23 +1,50 @@
-// 冲突中心（R3 核心）：人员负载热力图（未来 10 个工作日 × 全员）+ 六级冲突列表
-// 算法依据 docs/v2/03-产品设计文档-v2.md §5.1（CF-1~CF-6）；热力图摊平逻辑与 computeConflicts 步骤 1 一致
-import { Fragment, useMemo, useState } from 'react'
+// 冲突中心（R3 核心 · 真实 API（M2-INC-1 W2））：冲突快照列表（CF-1~6 过滤、红优先）+ 负载热力图 + 管理员重算
+// 数据源：GET /api/v1/conflicts（V7 conflict_snapshot 快照只读，INC-1 红线②不实时计算）、
+//        GET /api/v1/conflicts/heatmap（人员×日负载小时原料，红线②无判决字段）、
+//        POST /api/v1/conflicts/recompute（admin）。store.ts 零改动（双数据源纪律）。
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { AlertTriangle, CalendarClock, X } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, CalendarClock, RefreshCw, X } from 'lucide-react'
 import type { PageProps } from '../../nav'
-import type { ConflictItem, ConflictType } from '../../data/types'
-import {
-  computeConflicts, dateStr, daysBetween, releaseById, userById, useStore,
-  users, workItemById, workItems, workdays,
-} from '../../data/store'
-import { Avatar, Card, CardHeader, Empty, HeatCell, PageHeader, Pill } from '../../components/ui'
+import { conflictsApi, useConflicts, useHeatmap } from '../../api/queries'
+import { api } from '../../api/client'
+import { useAuth } from '../../api/AuthContext'
+import { useUserBriefs, toBrief } from '../../api/users'
+import { GlossaryButton } from '../../components/GlossaryButton'
+import { Btn, Card, CardHeader, Empty, PageHeader, Pill, Spinner } from '../../components/ui'
 
-/** 未来 10 个工作日（剔除周末与节假日，与 store.workdays 同一套日历） */
-const DAYS = workdays(dateStr(0), dateStr(30)).slice(0, 10)
+type Kind = 'CF-1' | 'CF-2' | 'CF-3' | 'CF-4' | 'CF-5' | 'CF-6'
 
-const TYPES: ConflictType[] = ['人员超载', '时间区间重叠', '里程碑挤压', '跨项目争用', '依赖倒挂', 'Deadline越级']
+const KINDS: { kind: Kind; label: string }[] = [
+  { kind: 'CF-1', label: '人员超载' },
+  { kind: 'CF-2', label: '时间区间重叠' },
+  { kind: 'CF-3', label: '里程碑挤压' },
+  { kind: 'CF-4', label: '跨项目争用' },
+  { kind: 'CF-5', label: '依赖倒挂' },
+  { kind: 'CF-6', label: 'Deadline越级' },
+]
+const kindLabel = (k: string) => KINDS.find((x) => x.kind === k)?.label ?? k
 
-const typeTone: Record<ConflictType, 'pink' | 'purple' | 'warn' | 'bad' | 'orange' | 'info'> = {
-  人员超载: 'pink', 时间区间重叠: 'purple', 里程碑挤压: 'warn', 跨项目争用: 'bad', 依赖倒挂: 'orange', Deadline越级: 'info',
+/** 每类冲突的「人话」解释与建议动作（用户视角：这是什么意思 / 我该做什么） */
+const KIND_GUIDE: Record<Kind, { meaning: string; action: string }> = {
+  'CF-1': { meaning: '这位成员某一天被排的工时超过了其每日可用容量，忙不过来', action: '把当天部分任务顺延或转派给他人' },
+  'CF-2': { meaning: '同一人名下两个未完成任务的时间区间互相撞车（分属不同迭代，或同时进行中）', action: '错开两个任务的区间，或先集中完成其中一件' },
+  'CF-3': { meaning: '同产品相邻两个版本：上一版的发布日与下一版的代码冻结日间隔不足 7 天', action: '评估合并这两个版本，或顺延下一版的冻结日期' },
+  'CF-4': { meaning: '超载当天该成员的任务横跨多个产品线，多头作战效率低', action: '按产品优先级砍掉低优任务，当天集中投入一条线' },
+  'CF-5': { meaning: '被阻塞任务的截止日早于阻塞它的任务——顺序反了，被阻塞的任务根本没法开工', action: '顺延被阻塞任务的截止日，或优先赶完阻塞任务' },
+  'CF-6': { meaning: '任务截止日超出了所属迭代（或版本）的截止日，注定延期', action: '把任务移出当前迭代，或与负责人确认整体延期' },
+}
+
+/** 热力着色基准（纯前端显示口径：默认容量 8h/日；服务端热力图不含判决字段） */
+const REF_HOURS = 8
+
+function heatColor(hours: number): string {
+  if (hours <= 0) return 'var(--color-ink-700)'
+  const ratio = hours / REF_HOURS
+  if (ratio > 1) return 'var(--color-bad)'
+  if (ratio >= 0.85) return 'var(--color-warn)'
+  return 'var(--color-ok)'
 }
 
 /** 可点击主体 / 关联任务小卡 */
@@ -37,180 +64,270 @@ function Chip({ children, onClick, active }: { children: ReactNode; onClick?: ()
   )
 }
 
+const shortId = (id: string) => id.slice(0, 8)
+
 export default function ConflictsPage({ nav }: PageProps) {
-  const version = useStore() // 订阅 store，数据变化时重算摊平与冲突
-  const [sel, setSel] = useState<{ userId: string; date: string } | null>(null)
-  const [typeFilter, setTypeFilter] = useState<ConflictType | '全部'>('全部')
-  const [hiId, setHiId] = useState<string | null>(null)
+  const { user } = useAuth()
+  const queryClient = useQueryClient()
+  const [kindFilter, setKindFilter] = useState<Kind | '全部'>('全部')
+  const [selUser, setSelUser] = useState<string | null>(null)
 
-  const conflicts = computeConflicts()
+  const conflicts = useConflicts(kindFilter === '全部' ? undefined : kindFilter)
+  const heatmap = useHeatmap(90)
 
-  // 工时摊平：成员 × 日期 → 当日未完成任务 estimateHours 均摊（对齐 computeConflicts 步骤 1）
-  const load = useMemo(() => {
-    const m = new Map<string, Map<string, number>>()
-    for (const w of workItems) {
-      const closed = w.type === 'defect'
-        ? w.status === '已关闭' || w.status === '回归通过'
-        : w.status === 'done' || w.status === 'closed'
-      if (closed || !w.startDate || !w.dueDate) continue
-      const span = workdays(w.startDate, w.dueDate)
-      if (span.length === 0) continue
-      const per = w.estimateHours / span.length
-      const byDay = m.get(w.assigneeId) ?? new Map<string, number>()
-      for (const d of span) byDay.set(d, (byDay.get(d) ?? 0) + per)
-      m.set(w.assigneeId, byDay)
-    }
-    return m
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version])
-
-  // 热力图选中格 → 该人当日相关冲突（无当日命中则退回该人全部冲突）
-  const base = sel ? conflicts.filter((c) => c.subjectId === sel.userId) : conflicts
-  const dayRows = sel ? base.filter((c) => c.detail.includes(sel.date.slice(5))) : base
-  const personRows = dayRows.length > 0 ? dayRows : base
-  const rows = personRows.filter((c) => typeFilter === '全部' || c.type === typeFilter)
-
-  const subjectChip = (c: ConflictItem) => {
-    if (c.subjectType === 'task') {
-      const w = workItemById(c.subjectId)
-      return w ? <Chip onClick={() => nav.go('tasks', w.id)}>{w.key} {w.title}</Chip> : null
-    }
-    if (c.subjectType === 'release') {
-      const r = releaseById(c.subjectId)
-      return r ? <Chip onClick={() => nav.go('delivery', r.id)}><CalendarClock size={11} /> {r.name}（{r.planDate.slice(5)} 发布）</Chip> : null
-    }
-    if (c.subjectType === 'user') {
-      const u = userById(c.subjectId)
-      return u ? <Chip active={hiId === c.id} onClick={() => setHiId(hiId === c.id ? null : c.id)}>{u.name}（点击高亮）</Chip> : null
-    }
-    return <span className="text-xs text-txt-mid">{c.subjectId}</span>
+  // 人话化：UUID → 姓名 / 任务键+标题（用户视角不含任何裸 ID）
+  // UT-28：走 /users/briefs（仅需登录态）——/users 需 platform:user:list，普通用户 403 会导致姓名映射为空
+  const userMap = toBrief(useUserBriefs().data)
+  const nameOf = (id: string) => userMap.get(id)?.name ?? `${shortId(id)}…`
+  const humanize = (text: string) => {
+    let out = text
+    for (const [id, brief] of userMap) out = out.split(id).join(brief.name)
+    return out
   }
+  const workItems = useQuery({
+    queryKey: ['work-items', 'all'],
+    queryFn: () => api<{ items: { id: string; key: string; title: string }[] }>('/api/v1/work-items?page=1&size=200'),
+    staleTime: 60_000,
+  })
+  const taskLabel = (id: string) => {
+    const it = workItems.data?.items.find((w) => w.id === id)
+    return it ? `${it.key} ${it.title}` : `任务 ${shortId(id)}…`
+  }
+
+  const recompute = useMutation({
+    mutationFn: () => conflictsApi.recompute(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['conflicts'] })
+      void queryClient.invalidateQueries({ queryKey: ['work-items'] })
+    },
+  })
+
+  const rows = useMemo(() => {
+    const list = [...(conflicts.data ?? [])]
+    list.sort((a, b) => {
+      if (a.payload.severity !== b.payload.severity) return a.payload.severity === 'red' ? -1 : 1
+      return a.kind < b.kind ? -1 : 1
+    })
+    return selUser ? list.filter((c) => c.payload.userId === selUser) : list
+  }, [conflicts.data, selUser])
+
+  const redCount = (conflicts.data ?? []).filter((c) => c.payload.severity === 'red').length
+  const isAdmin = user?.platformRole === 'OWNER' || user?.platformRole === 'ADMIN'
+
+  const lastDetectedAt = conflicts.data?.[0]?.detectedAt
+
+  /** cells → Map（50 人×90 格直查 O(1)，避免逐格 find 的 4500² 扫描） */
+  const cellMap = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const c of heatmap.data?.cells ?? []) m.set(`${c.userId}|${c.date}`, Number(c.hours))
+    return m
+  }, [heatmap.data])
 
   return (
     <div>
-      <PageHeader title="冲突中心" desc="六级冲突实时检测 · 负载热力图与冲突清单联动" />
+      <PageHeader
+        title="冲突中心"
+        desc="六级冲突快照（每日 02:00 全量 + 变更增量批算）· 负载热力图 · 红色冲突 5 分钟内推送当事人"
+        actions={
+          <div className="flex items-center gap-2">
+            <GlossaryButton />
+            {isAdmin && (
+              <Btn
+                onClick={() => recompute.mutate()}
+                disabled={recompute.isPending}
+              >
+                <RefreshCw size={14} className={recompute.isPending ? 'animate-spin' : ''} />
+                {recompute.isPending ? '重算中…' : '重算冲突'}
+              </Btn>
+            )}
+          </div>
+        }
+      />
 
       {/* 说明条 */}
       <div className="mb-4 flex items-start gap-2.5 rounded-card border border-line bg-info-bg px-4 py-3">
         <AlertTriangle size={16} className="mt-0.5 shrink-0 text-info" />
         <p className="min-w-0 flex-1 text-xs leading-5 text-txt-mid">
-          六级冲突：① 人员超载（日负载 ≥85% 容量）② 时间区间重叠（同人任务撞期）③ 里程碑挤压（相邻发布冻结间距 &lt; 7 天）
-          ④ 跨项目争用（跨产品负载超容）⑤ 依赖倒挂（任务截止早于其依赖）⑥ Deadline 越级（截止晚于迭代 / 版本容器）。
-          <span className="font-semibold text-txt-hi">红色需立即处理，黄色为预警。</span>
+          真实 API（M2）：CF-1 人员超载 · CF-2 区间重叠 · CF-3 里程碑挤压（&lt;7 天）· CF-4 跨产品争用 ·
+          CF-5 依赖倒挂 · CF-6 Deadline 越级。
+          <span className="font-semibold text-txt-hi">红色需立即处理，黄色为预警</span>
+          ；红色冲突新增将站内通知并 WS 推送当事人。
         </p>
-        <span className="shrink-0 text-xs tabular-nums text-txt-mid">检测于 {conflicts[0]?.detectedAt ?? '--:--'}</span>
+        <span className="shrink-0 text-xs tabular-nums text-txt-mid">
+          检测于 {lastDetectedAt ? new Date(lastDetectedAt).toLocaleTimeString() : '--:--'}
+        </span>
       </div>
 
-      {/* 上半区：人员负载热力图 */}
+      {recompute.data && (
+        <div className="mb-4 rounded-card border border-line bg-ok-bg px-4 py-2.5 text-xs text-ok-deep">
+          重算完成：命中 {recompute.data.total} 条（红 {recompute.data.red} / 黄 {recompute.data.yellow}），
+          红色新增 {recompute.data.redNew} 条，已通知 {recompute.data.notifiedUsers} 名当事人。
+        </div>
+      )}
+      {recompute.isError && (
+        <div className="mb-4 rounded-card border border-bad/30 bg-bad-bg px-4 py-2.5 text-xs text-bad-deep">
+          重算失败：{(recompute.error as Error).message}
+        </div>
+      )}
+
+      {/* 上半区：人员负载热力图（原料矩阵） */}
       <Card className="mb-4">
         <CardHeader
-          title="人员负载热力图"
+          title="人员负载热力图 · 未来 90 天"
           extra={(
             <div className="flex items-center gap-3 text-xs text-txt-mid">
-              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-ok opacity-70" />正常</span>
-              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-warn opacity-70" />≥ 85%</span>
-              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-bad opacity-90" />超载</span>
-              <span className="text-txt-low">点击红 / 黄格查看当日冲突</span>
+              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-ok opacity-70" />有负载</span>
+              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-warn opacity-70" />≥85%</span>
+              <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded-sm bg-bad opacity-90" />超 8h</span>
+              <span className="text-txt-low">小时原料（非服务端判决）· 点击行筛选当事人</span>
             </div>
           )}
         />
         <div className="overflow-x-auto px-4 py-3">
-          <div className="grid min-w-[760px] items-center gap-y-1" style={{ gridTemplateColumns: '140px repeat(10, minmax(52px, 1fr))' }}>
-            <div className="text-xs text-txt-low">成员 / 日期</div>
-            {DAYS.map((d) => {
-              const diff = daysBetween(dateStr(0), d)
-              return (
-                <div key={d} className={`px-0.5 text-center text-[11px] font-medium ${diff <= 1 ? 'text-brand-deep' : 'text-txt-mid'}`}>
-                  {d.slice(5)}{diff === 0 ? ' · 今' : diff === 1 ? ' · 明' : ''}
-                </div>
-              )
-            })}
-            {users.map((u) => (
-              <Fragment key={u.id}>
-                <div className="flex items-center gap-2 pr-2">
-                  <Avatar userId={u.id} size={22} />
-                  <span className="truncate text-xs text-txt-hi">{u.name}</span>
-                </div>
-                {DAYS.map((d) => {
-                  const h = load.get(u.id)?.get(d) ?? 0
-                  const ratio = h / u.dailyCapacityHours
-                  const hot = ratio >= 0.85
-                  const activeCell = sel?.userId === u.id && sel.date === d
-                  return (
-                    <button
-                      key={d}
-                      type="button"
-                      onClick={() => { if (hot) { setSel({ userId: u.id, date: d }); setTypeFilter('全部'); setHiId(null) } }}
-                      title={`${u.name} ${d.slice(5)}：负载 ${h.toFixed(1)}h / 容量 ${u.dailyCapacityHours}h（${Math.round(ratio * 100)}%）`}
-                      className={`h-6 cursor-default ${hot ? 'cursor-pointer' : ''} ${activeCell ? 'rounded-sm outline-2 outline-brand' : ''}`}
-                    >
-                      <HeatCell ratio={ratio} />
-                    </button>
-                  )
-                })}
-              </Fragment>
-            ))}
-          </div>
+          {heatmap.isLoading ? (
+            <Empty text="热力图加载中…" size="sm" icon={<Spinner />} />
+          ) : (heatmap.data?.users.length ?? 0) === 0 ? (
+            <Empty text="暂无负载原料（无带工时的开放工作项）" />
+          ) : (
+            <div className="space-y-0.5" style={{ minWidth: 760 }}>
+              <div className="flex items-center gap-1 pl-28 text-[10px] text-txt-low">
+                {heatmap.data!.days.map((d, i) => (
+                  <span key={d} className="w-2 shrink-0 text-center tabular-nums" title={d}>
+                    {i % 7 === 0 ? d.slice(8) : ''}
+                  </span>
+                ))}
+              </div>
+              {heatmap.data!.users.map((u) => (
+                <button
+                  key={u.userId}
+                  type="button"
+                  onClick={() => { setSelUser(selUser === u.userId ? null : u.userId) }}
+                  className={`flex w-full cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-ink-700 ${selUser === u.userId ? 'bg-brand-bg/60' : ''}`}
+                >
+                  <span className="w-28 shrink-0 truncate text-[10px] font-medium text-txt-mid" title={nameOf(u.userId)}>{nameOf(u.userId)}</span>
+                  {heatmap.data!.days.map((d) => {
+                    const h = cellMap.get(`${u.userId}|${d}`) ?? 0
+                    return (
+                      <span
+                        key={d}
+                        title={`${nameOf(u.userId)} ${d}：负载 ${h.toFixed(1)}h（容量 8h/日）`}
+                        className="h-4 w-2 shrink-0 rounded-[2px]"
+                        style={{ background: heatColor(h), opacity: h > 0 ? 0.85 : 1 }}
+                      />
+                    )
+                  })}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </Card>
 
-      {/* 下半区：冲突列表 */}
+      {/* 下半区：冲突快照列表 */}
       <Card>
         <CardHeader
-          title={`冲突列表 · ${rows.length} 条`}
-          extra={sel ? (
+          title={`冲突快照 · ${rows.length} 条${redCount > 0 ? ` · 红色 ${redCount}` : ''}`}
+          extra={selUser ? (
             <button
               type="button"
-              onClick={() => setSel(null)}
+              onClick={() => setSelUser(null)}
               className="inline-flex cursor-pointer items-center gap-1 rounded-full bg-bad-bg px-2 py-0.5 text-xs font-semibold text-bad-deep hover:opacity-80"
             >
-              筛选：{userById(sel.userId)?.name} {sel.date.slice(5)} <X size={11} />
+              筛选：{shortId(selUser)}… <X size={11} />
             </button>
           ) : (
-            <span className="text-xs text-txt-low">红色置顶 · 点击主体可跳转</span>
+            <span className="text-xs text-txt-low">红色置顶 · detected_at 降序</span>
           )}
         />
         <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
-          {(['全部', ...TYPES] as (ConflictType | '全部')[]).map((t) => {
-            const n = t === '全部' ? conflicts.length : conflicts.filter((c) => c.type === t).length
-            const activeTab = typeFilter === t
+          {(['全部', ...KINDS.map((k) => k.kind)] as (Kind | '全部')[]).map((k) => {
+            const active = kindFilter === k
             return (
               <button
-                key={t}
+                key={k}
                 type="button"
-                onClick={() => setTypeFilter(t)}
+                onClick={() => setKindFilter(k)}
                 className={`cursor-pointer rounded-full px-2.5 py-1 text-xs transition-colors ${
-                  activeTab ? 'bg-brand-bg font-semibold text-brand-deep' : 'text-txt-mid hover:bg-ink-700 hover:text-txt-hi'
+                  active ? 'bg-brand-bg font-semibold text-brand-deep' : 'text-txt-mid hover:bg-ink-700 hover:text-txt-hi'
                 }`}
               >
-                {t} <span className="tabular-nums opacity-70">{n}</span>
+                {k === '全部' ? '全部' : `${k} ${kindLabel(k)}`}
               </button>
             )
           })}
         </div>
-        {rows.length === 0 && <Empty text="当前筛选下无冲突" />}
-        <ul>
-          {rows.map((c) => (
-            <li
-              key={c.id}
-              className={`flex items-start gap-2.5 border-b border-line px-4 py-2.5 last:border-b-0 ${hiId === c.id ? 'bg-brand-bg/60' : ''}`}
-            >
-              <Pill tone={c.severity === 'red' ? 'bad' : 'warn'}>{c.severity === 'red' ? '红' : '黄'}</Pill>
-              <Pill tone={typeTone[c.type]}>{c.type}</Pill>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm leading-5 text-txt-hi">{c.detail}</div>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                  {subjectChip(c)}
-                  {c.relatedTaskIds.map((tid) => {
-                    const w = workItemById(tid)
-                    return <Chip key={tid} onClick={() => nav.go('tasks', tid)}>{w?.key ?? tid}</Chip>
-                  })}
+        {conflicts.isLoading ? (
+          <Empty text="快照加载中…" size="sm" icon={<Spinner />} />
+        ) : rows.length === 0 ? (
+          <Empty text="当前筛选下无冲突快照（可请管理员触发重算）" />
+        ) : (
+          <ul>
+            {rows.map((c) => (
+              <li key={`${c.payload.fp}|${c.detectedAt}`} className="flex items-start gap-2.5 border-b border-line px-4 py-2.5 last:border-b-0">
+                <Pill tone={c.payload.severity === 'red' ? 'bad' : 'warn'}>
+                  {c.payload.severity === 'red' ? '红' : '黄'}
+                </Pill>
+                <Pill tone={c.kind === 'CF-6' ? 'info' : c.kind === 'CF-3' ? 'warn' : 'purple'}>{c.kind} {kindLabel(c.kind)}</Pill>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm leading-5 text-txt-hi">{humanize(c.payload.detail)}</div>
+                  <div className="mt-1 space-y-0.5 text-xs leading-4">
+                    <div className="text-txt-mid"><span className="text-txt-low">含义：</span>{KIND_GUIDE[c.kind as Kind]?.meaning ?? '—'}</div>
+                    <div className="text-brand-deep"><span className="text-txt-low">建议：</span>{KIND_GUIDE[c.kind as Kind]?.action ?? '—'}</div>
+                    {/* UT-27：冲突时间窗口（缺省安全——旧快照无 window 则不渲染该行；单日 start===end 只显示一天） */}
+                    {c.payload.window && c.payload.window.start && c.payload.window.end && (
+                      <div className="text-txt-mid">
+                        <span className="text-txt-low">时间窗口：</span>
+                        <span className="tabular-nums">
+                          {c.payload.window.start === c.payload.window.end
+                            ? c.payload.window.start
+                            : `${c.payload.window.start} ~ ${c.payload.window.end}`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {/* UT-27：参与冲突的事件列表（缺省安全；每个事件一行，样式与任务 chip 一致） */}
+                  {(c.payload.events?.length ?? 0) > 0 && (
+                    <div className="mt-1.5 space-y-1">
+                      {c.payload.events!.map((ev) => (
+                        <div key={ev.key} className="flex">
+                          <span className="inline-flex max-w-[320px] items-center gap-1 rounded border border-line bg-canvas px-1.5 py-0.5 text-xs text-txt-mid">
+                            <span className="shrink-0 font-mono font-semibold text-brand">{ev.key}</span>
+                            <span className="min-w-0 truncate">{ev.title}</span>
+                            {(ev.start || ev.due) && (
+                              <span className="shrink-0 tabular-nums text-txt-low">
+                                {ev.start?.slice(0, 10) ?? '—'} ~ {ev.due?.slice(0, 10) ?? '—'}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    {c.payload.subjectType === 'user' && (
+                      <Chip active={selUser === c.payload.subjectId}
+                        onClick={() => setSelUser(selUser === c.payload.subjectId ? null : c.payload.subjectId)}>
+                        当事人 {nameOf(c.payload.subjectId)}
+                      </Chip>
+                    )}
+                    {c.payload.subjectType === 'release' && (
+                      <Chip onClick={() => nav.go('delivery')}>
+                        <CalendarClock size={11} /> 版本
+                      </Chip>
+                    )}
+                    {c.payload.relatedTaskIds.map((tid) => (
+                      <Chip key={tid} onClick={() => nav.go('tasks', tid)}>{taskLabel(tid)}</Chip>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <span className="shrink-0 text-xs tabular-nums text-txt-low">{c.detectedAt}</span>
-            </li>
-          ))}
-        </ul>
+                <span className="shrink-0 text-xs tabular-nums text-txt-low">
+                  {new Date(c.detectedAt).toLocaleString()}
+                  {c.resolvedAt ? ' · 已消解' : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
     </div>
   )

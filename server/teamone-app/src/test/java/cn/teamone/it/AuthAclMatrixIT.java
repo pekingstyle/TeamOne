@@ -1,5 +1,6 @@
 package cn.teamone.it;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -37,7 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Testcontainers
 @SpringBootTest(classes = cn.teamone.app.TeamOneApplication.class,
-        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {"teamone.event.enabled=false", // IT 只验业务：事件管道（relay/consumer/fanout/sweeper）关闭，专用 IT/环境覆盖（M2）
+                "teamone.seed.enabled=true", "teamone.seed.demo=true"}) // 免疫默认值翻转（与其他 IT 同口径，QA 复审）
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class AuthAclMatrixIT {
 

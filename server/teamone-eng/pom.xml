@@ -10,11 +10,36 @@
   </parent>
   <artifactId>teamone-eng</artifactId>
   <name>TeamOne :: Eng</name>
-  <description>工程底座域：Gitea 适配层/MR 评审门禁/基线/WorkTree/CI 视图（M1 实现，见架构设计 §6.3）</description>
+  <description>工程底座域：自研 Git 内核（GitPort：bare repo + git 命令）/MR 评审门禁/基线/WorkTree/CI 视图（见架构设计 §6.3 与 07 内核决策）</description>
   <dependencies>
     <dependency>
       <groupId>cn.teamone</groupId>
       <artifactId>teamone-shared</artifactId>
+    </dependency>
+    <!-- W4: OutboxWriter（platform SPI；§1.4 允许业务域→platform 单向，ArchUnit R5 只禁 prd/collab/app） -->
+    <dependency>
+      <groupId>cn.teamone</groupId>
+      <artifactId>teamone-platform</artifactId>
+    </dependency>
+    <!-- W4: eng.commit_work_item 实体/仓库（JPA）；spring-web 经 platform→security 传递（与 collab 同构） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <!-- M2 S-1': Blame 缓存与 Valkey L2 存储支持 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-jsr310</artifactId>
+    </dependency>
+    <!-- W4: 纯逻辑单测（hook 解析/GitPort 白名单） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>

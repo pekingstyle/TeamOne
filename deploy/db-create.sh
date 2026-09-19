@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 在 WSL 内执行（凭据从 deploy/.env 读取，不写死在本脚本）：
-#   wsl -d Ubuntu-24.04 -u root bash /mnt/c/Users/afire/Workspace/Electron/TeamOne/deploy/db-create.sh
+#   bash deploy/db-create.sh
 set -e
 
-ENV_FILE="${1:-/mnt/c/Users/afire/Workspace/Electron/TeamOne/deploy/.env}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${1:-$SCRIPT_DIR/.env}"
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"

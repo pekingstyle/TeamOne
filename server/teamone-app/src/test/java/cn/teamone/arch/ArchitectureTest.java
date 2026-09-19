@@ -14,7 +14,9 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * <br>R2 platform 只服务自身：不依赖业务域与装配层
  * <br>R3/R4/R5 prd ⊥ collab ⊥ eng：三业务域互相禁止编译期依赖（协作只走 Outbox 事件 + platform SPI）
  * <br>R6 insight 纯消费者：只依赖 platform(SPI)+shared，不反向依赖业务域
- * <br>R7 装配层只进不出：任何模块不得依赖 cn.teamone.app..（app 是组合根）</p>
+ * <br>R7 装配层只进不出：任何模块不得依赖 cn.teamone.app..（app 是组合根）
+ * <br>R8 Git 进程唯一出口：除 cn.teamone.eng.infra.git..（GitCommandPort，07 §2.3 唯一出墙口）外，
+ * 任何 cn.teamone 类不得 new ProcessBuilder——fork 子进程必须经 GitPort 抽象（参数白名单/超时强杀）</p>
  *
  * <p>包结构规则（api/app/domain/query/event/infra）随 M1-W2 prd 域填充后补充为分层约束。</p>
  *
@@ -69,4 +71,15 @@ class ArchitectureTest {
     static final ArchRule R7_app_is_composition_root = noClasses()
             .that().resideOutsideOfPackage("cn.teamone.app..")
             .should().dependOnClassesThat().resideInAPackage("cn.teamone.app..");
+
+    /**
+     * R8（M2-INC-1 W1 清账，07 §2.3 纪律的程序化视图）：Git 子进程只能从
+     * cn.teamone.eng.infra.git..（GitCommandPort：参数白名单 + 无 shell + 5s 超时强杀）拉起。
+     * 覆盖 ProcessBuilder 两个构造器：String...（编译为 String[]）与 List。
+     */
+    @ArchTest
+    static final ArchRule R8_process_only_via_git_infra = noClasses()
+            .that().resideOutsideOfPackage("cn.teamone.eng.infra.git..")
+            .should().callConstructor(ProcessBuilder.class, String[].class)
+            .orShould().callConstructor(ProcessBuilder.class, java.util.List.class);
 }

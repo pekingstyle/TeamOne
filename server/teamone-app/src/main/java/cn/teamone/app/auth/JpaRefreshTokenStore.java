@@ -1,6 +1,7 @@
 package cn.teamone.app.auth;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -40,5 +41,18 @@ public class JpaRefreshTokenStore implements RefreshTokenStore {
             t.setRevokedAt(Instant.now());
             repo.save(t);
         });
+    }
+
+    @Override
+    public void revokeAllForUser(UUID userId, String exceptHash) {
+        // 改密强制下线（保留当前设备）：该用户全部令牌逐行置吊销，豁免哈希跳过（幂等）
+        List<RefreshToken> tokens = repo.findByUserId(userId).stream()
+                .filter(t -> exceptHash == null || exceptHash.isBlank() || !exceptHash.equals(t.getTokenHash()))
+                .toList();
+        Instant now = Instant.now();
+        for (RefreshToken t : tokens) {
+            t.setRevokedAt(now);
+        }
+        repo.saveAll(tokens);
     }
 }

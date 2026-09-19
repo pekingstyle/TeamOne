@@ -1,0 +1,71 @@
+# TeamOne nginx TLS 终结 + WSS 反代（INC-2 T-6，06 §A2 唯一硬约束）
+# 模板由 nginx 官方镜像 entrypoint 自动 envsubst（/etc/nginx/templates/*.template
+# → /etc/nginx/conf.d/，仅替换容器环境变量；$host 等 nginx 运行时变量原样保留）。
+# 变量：TEAMONE_BACKEND_ORIGIN（如 http://192.168.2.101:8080）
+#   —— 禁 localhost：host 网络容器内 localhost=WSL 自身；WSL→Windows 后端用 LAN IP
+#      （06 §6 教训，W1 预检已证通）。IP 经 .env 的 TEAMONE_BACKEND_ORIGIN 可配，模板不硬编码。
+# 证书：deploy/nginx/gen-dev-cert.sh 自签生成（tls/ 目录 gitignored，不入库）。
+
+# 80 → 443 跳转
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name teamone.local localhost;
+
+    ssl_certificate     /etc/nginx/tls/teamone.crt;
+    ssl_certificate_key /etc/nginx/tls/teamone.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+
+    # 大文件直传直下不经手 nginx（MinIO 两步制），仅 API/WS 反代
+    client_max_body_size 1m;
+
+    # M3-INC-3 V-20 安全加固：生产级 HTTP 响应标头防御基线
+    # 1. 禁用 iframe 嵌合以彻底防范点击劫持（Clickjacking）
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    # 2. 禁止浏览器自动猜测 MIME 类型以防御 MIME 混淆攻击
+    add_header X-Content-Type-Options "nosniff" always;
+    # 3. 启用并强制浏览器 XSS 过滤机制
+    add_header X-XSS-Protection "1; mode=block" always;
+    # 4. 严控 Referrer 来源外泄
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # 5. HSTS 强制全站 HTTPS 交互（有效周期 1 年并包含子域）
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # WebSocket 升级（wss://…/ws → ws://backend/ws）：Upgrade/Connection 头 +
+    # 3600s 读超时（§4.1 心跳 30s 链路上限裕量）
+    location /ws {
+        proxy_pass ${TEAMONE_BACKEND_ORIGIN};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # REST API（https://…/api/ → http://backend/api/）
+    location /api/ {
+        proxy_pass ${TEAMONE_BACKEND_ORIGIN};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+
+    # Actuator 仅内网排障（health 经 nginx 探活）
+    location /actuator/health {
+        proxy_pass ${TEAMONE_BACKEND_ORIGIN};
+        proxy_set_header Host $host;
+    }
+}
