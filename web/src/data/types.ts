@@ -359,6 +359,8 @@ export interface UnitTestCheck {
   coverageTotal: number
   coverageDelta: number
   gatePassed: boolean
+  /** 门禁回传备注（后端实名 reportUrl，含 coverage=jacoco/simulated 注记；来源徽标用，可缺省） */
+  reportUrl?: string
   exempt?: { reason: string; approvedById: string }
 }
 

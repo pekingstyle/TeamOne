@@ -160,6 +160,7 @@ export default function MrDetailPage({ nav, id }: PageProps) {
       coverageTotal: r.unitTestCheck.coverageTotal,
       coverageDelta: r.unitTestCheck.coverageDelta,
       gatePassed: r.unitTestCheck.gatePassed,
+      reportUrl: r.unitTestCheck.reportUrl,
       exempt: r.unitTestCheck.exempt
         ? {
             reason: (r.unitTestCheck.exempt as any).reason ?? '已豁免',
@@ -178,6 +179,10 @@ export default function MrDetailPage({ nav, id }: PageProps) {
     basedOnBaselineId: r.basedOnBaselineId,
     rebaseRequired: r.rebaseRequired,
   }
+
+  // ⑥l-B 覆盖率来源：后端注记实名落在 reportUrl（"…;coverage=jacoco" → 真实 / 含 "simulated" → 模拟；
+  // 集成实测契约对齐——payload 无独立 note 键），驱动 CovItem 来源徽标，缺省不渲染
+  const covNote = r.unitTestCheck.reportUrl
 
   // 动作处理：全部走自研内核远程 API（不再回退 store）；失败记录日志，页面保持当前状态不崩
   const handleReview = async (state: 'approved' | 'changes_requested') => {
@@ -305,7 +310,7 @@ export default function MrDetailPage({ nav, id }: PageProps) {
         <div className="mb-4 rounded-md bg-bad-bg px-3 py-2 text-xs text-bad-deep">{actionErr}</div>
       )}
 
-      <UnitTestCard mr={mr} gates={gates} onExempt={handleExempt} />
+      <UnitTestCard mr={mr} gates={gates} onExempt={handleExempt} covNote={covNote} />
       <UnitTestRulesPanel gates={gates} />
       {mr.status !== 'merged' && mr.status !== 'closed' && (
         <GateBar
@@ -471,10 +476,13 @@ function UnitTestCard({
   mr,
   gates,
   onExempt,
+  covNote,
 }: {
   mr: MergeRequest
   gates: { totalCoverage: number; patchCoverage: number }
   onExempt: (reason: string) => Promise<void>
+  /** 门禁回传备注（⑥k 起 payload.note）：驱动覆盖率来源徽标；缺省不渲染 */
+  covNote?: string
 }) {
   const utc = mr.unitTestCheck
   const briefOf = useBriefMap()
@@ -551,8 +559,8 @@ function UnitTestCard({
                   <span className="font-medium text-bad-deep">failed ✗</span>
                 )}
               </span>
-              <CovItem label="整体覆盖率" value={utc.coverageTotal} gate={gates.totalCoverage} />
-              <CovItem label="patch 覆盖率" value={utc.coverageDelta} gate={gates.patchCoverage} />
+              <CovItem label="整体覆盖率" value={utc.coverageTotal} gate={gates.totalCoverage} note={covNote} />
+              <CovItem label="patch 覆盖率" value={utc.coverageDelta} gate={gates.patchCoverage} note={covNote} />
             </div>
             {utc.testFiles.length > 0 && (
               <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs text-txt-low">
@@ -606,12 +614,28 @@ function UnitTestCard({
   )
 }
 
-function CovItem({ label, value, gate }: { label: string; value: number; gate: number }) {
+/**
+ * 覆盖率行（整体/patch 两行共用）。
+ * ⑥l-B 来源徽标：note 含 "coverage=jacoco" → 绿 Pill「真实」（JaCoCo 实测）；含 "simulated" → 灰 Pill「模拟」；
+ * note 缺省（旧 payload）不渲染，缺省安全。
+ */
+function CovItem({ label, value, gate, note }: { label: string; value: number; gate: number; note?: string }) {
   const ok = value >= gate
+  value = Math.round(value * 10) / 10 // 长小数收一位（33.152882… → 33.2）
+  const src = note?.includes('coverage=jacoco')
+    ? { tone: 'ok' as const, text: '真实', title: 'JaCoCo 实测，patch=变更行∩覆盖行' }
+    : note?.includes('simulated')
+      ? { tone: 'neutral' as const, text: '模拟', title: '演示/回传值，真实计算见流水线' }
+      : undefined
   return (
     <span className="flex items-center gap-1.5">
       <span className="text-xs text-txt-low">{label}</span>
       <span className={`text-sm font-semibold tabular-nums ${ok ? 'text-ok-deep' : 'text-bad-deep'}`}>{value}%</span>
+      {src && (
+        <span title={src.title}>
+          <Pill tone={src.tone}>{src.text}</Pill>
+        </span>
+      )}
       <span
         className={`rounded px-1 py-px text-[10px] font-medium ${
           ok ? 'bg-ok-bg text-ok-deep' : 'bg-bad-bg text-bad-deep'

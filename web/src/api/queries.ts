@@ -1221,6 +1221,9 @@ export interface RemoteMergeRequest {
     coverageTotal: number
     coverageDelta: number
     gatePassed: boolean
+    /** 门禁回传备注——后端实名落在 reportUrl（"/pipelines/{id} （…;coverage=jacoco）"，
+     *  ⑥l 集成实测契约对齐）；前端据此渲染覆盖率来源徽标：jacoco→「真实」/ simulated→「模拟」，缺省不渲染 */
+    reportUrl?: string
     exempt?: { reason: string; approvedById: string; approvedAt?: string }
   }
   rebaseRequired: boolean
@@ -1504,6 +1507,9 @@ export interface RemoteStage {
   status: 'passed' | 'failed' | 'running' | 'pending' | 'skipped' | 'canceled'
   /** 阶段耗时秒数 */
   durationSec?: number
+  /** 阶段摘要文本（stages jsonb 回传；test 阶段可含 "覆盖率 total 78.3% / patch 85.0%"，
+   *  ⑥l-B 前端正则提取后在 test 作业行尾显示覆盖率小徽标；缺省安全） */
+  summary?: string
   /** 阶段内部包含的作业列表 */
   jobs: RemoteJob[]
 }

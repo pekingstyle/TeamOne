@@ -741,7 +741,7 @@ public class MergeRequestService {
     private MrDetailResponse.UnitTestCheckItem extractUnitTestCheck(List<MergeCheck> checks) {
         Optional<MergeCheck> opt = checks.stream().filter(c -> "unit_test".equals(c.getKind())).findFirst();
         if (opt.isEmpty()) {
-            return new MrDetailResponse.UnitTestCheckItem(false, List.of(), false, 0.0, 0.0, false, null);
+            return new MrDetailResponse.UnitTestCheckItem(false, List.of(), false, 0.0, 0.0, null, false, null);
         }
         MergeCheck c = opt.get();
         Map<String, Object> p = c.getPayload() != null ? c.getPayload() : Map.of();
@@ -752,8 +752,9 @@ public class MergeRequestService {
         double covDelta = parseDoubleSafe(p.get("coverageDelta"), 0.0);
         boolean gatePassed = c.isPassed();
         Map<String, Object> exempt = (p.get("exempt") instanceof Map<?, ?> m) ? (Map<String, Object>) m : null;
+        String reportUrl = p.get("reportUrl") instanceof String ru ? ru : null;
 
-        return new MrDetailResponse.UnitTestCheckItem(hasTests, testFiles, passed, covTotal, covDelta, gatePassed, exempt);
+        return new MrDetailResponse.UnitTestCheckItem(hasTests, testFiles, passed, covTotal, covDelta, reportUrl, gatePassed, exempt);
     }
 
     @SuppressWarnings("unchecked")

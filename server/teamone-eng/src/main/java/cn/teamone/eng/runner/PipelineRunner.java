@@ -2,17 +2,22 @@ package cn.teamone.eng.runner;
 
 import cn.teamone.eng.app.PipelineJobTemplates;
 import cn.teamone.eng.app.PipelineService;
+import cn.teamone.eng.app.PipelineService.CoverageResult;
 import cn.teamone.eng.app.PipelineService.TestSummary;
+import cn.teamone.eng.domain.MergeRequest;
 import cn.teamone.eng.domain.PipelineJob;
 import cn.teamone.eng.domain.PipelineRun;
 import cn.teamone.eng.domain.Repository;
+import cn.teamone.eng.infra.git.GitDiffResult;
 import cn.teamone.eng.infra.git.GitPort;
+import cn.teamone.eng.repo.MergeRequestRepository;
 import cn.teamone.eng.repo.PipelineJobRepository;
 import cn.teamone.eng.repo.PipelineRunRepository;
 import cn.teamone.eng.repo.RepositoryRepository;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,24 +40,32 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 内嵌流水线 Runner（M4-INC1 真实执行 · docs/v2/11 §4 执行架构最小版）。
+ * 内嵌流水线 Runner（M4-INC1 真实执行 · docs/v2/11 §4 执行架构最小版；M4-INC2 覆盖率真实计算
+ * + 执行安全加固）。
  *
  * <p>职责与时序（单作业全链）：@Scheduled fixedDelay 5s 只做<b>认领分发</b>——
  * native {@code SELECT ... FOR UPDATE SKIP LOCKED}（照 OutboxRelay 先例，DB 作业表为
  * 唯一真相）抢一个 pending 作业 → 认领（status=running, locked_by=hostname:pid,
- * started_at, attempt+1）→ 交独立执行线程池（单线程 + 单飞布尔，全局并发 1，不占
+ * started_at, attempt+1）→ <b>毒作业防护</b>（认领后 attempt≥max-attempts（默认 3）直接
+ * failed 不执行）→ 交独立执行线程池（单线程 + 单飞布尔，全局并发 1，不占
  * scheduler 线程）→ {@code git archive} 导出工作区（经 GitPort，R8 纪律：git 只走
- * infra.git 出墙口）→ which 探测工具链 → ProcessBuilder 真实执行模板命令（15 分钟
- * 超时强杀，stdout/stderr 合流尾部 120 行）→ surefire 聚合（test+maven）→
- * {@link PipelineService#completeJobAndAdvance} 收口链式推进（build 成功建 test）→
- * run 终态时 {@link PipelineService#feedMrGateIfLinkedReal} 真实回填 MR 门禁 →
- * finally 整卷回收工作区。</p>
+ * infra.git 出墙口）→ 工具镜像探测 → 工具容器真实执行模板命令（资源上限 --memory/--cpus，
+ * 15 分钟超时强杀，stdout/stderr 合流尾部 120 行；test 阶段 maven 注入 JaCoCo agent）→
+ * surefire 聚合（test+maven）→ test 作业成功后 JaCoCo 报告生成 + 解析 + patch 覆盖率
+ * （变更行∩覆盖行，MR source/target 分支三路 diff）→
+ * {@link PipelineService#completeJobAndAdvance} 收口链式推进（build 成功建 test；stages
+ * summary 带覆盖率摘要）→ run 终态时 {@link PipelineService#feedMrGateIfLinkedReal}
+ * 真实回填 MR 门禁 → finally 整卷回收工作区。</p>
  *
  * <p>灰度：{@code teamone.pipeline.simulated=true}（模拟模式）时本 Bean 不装配
  * （无认领者；模拟路径也不建作业行）。</p>
  *
- * <p>遗留（M4-INC2/M5）：running 态崩溃恢复（locked_by 心跳超时重派）、作业容器隔离、
- * 取消信号（Valkey 辅助面）、并发度配置。</p>
+ * <p>降级矩阵（覆盖率链路缺失不阻塞主链，单测行为与 ⑥k 一致）：agent 未预热→不注入照常
+ * 单测；exec 缺失（含被建工程 pom argLine 覆盖）→无报告；报告/解析失败→CoverageResult
+ * 降级标记——MR 门禁沿用旧值 + simulated 注记。</p>
+ *
+ * <p>遗留（M5）：running 态崩溃恢复心跳超时重派、取消信号（Valkey 辅助面）、并发度配置、
+ * npm 侧 istanbul 覆盖率适配。</p>
  *
  * @author Ivan Yang, 2026-09-19
  */
@@ -89,6 +102,8 @@ public class PipelineRunner {
     private static final int LOG_TAIL_LINES = 120;
     /** DB 故障告警节流（5s 轮询下防刷屏） */
     private static final long WARN_INTERVAL_MS = 30_000;
+    /** 毒作业防护文案（attempt 达上限直接 failed） */
+    static final String POISON_JOB_MSG = "超过重试上限（毒作业防护）";
 
     /** 认领者标识 hostname:pid（内嵌 Runner 单实例；崩溃恢复语义归 M4-INC2） */
     private static final String RUNNER_IDENTITY = resolveIdentity();
@@ -101,6 +116,11 @@ public class PipelineRunner {
     private final PipelineJobRepository jobRepo;
     private final PipelineRunRepository runRepo;
     private final RepositoryRepository repositoryRepo;
+    private final MergeRequestRepository mrRepo;
+
+    /** 毒作业防护：认领次数上限（认领后 attempt≥本值直接 failed 不执行；可配） */
+    @Value("${teamone.pipeline.max-attempts:3}")
+    private int maxAttempts = 3;
 
     /** 单飞：上一作业未收口前不认领新作业（全局并发 1；@Scheduled 只做认领分发） */
     private final AtomicBoolean executing = new AtomicBoolean(false);
@@ -120,7 +140,8 @@ public class PipelineRunner {
                           BuildCommandExecutor buildExecutor,
                           PipelineJobRepository jobRepo,
                           PipelineRunRepository runRepo,
-                          RepositoryRepository repositoryRepo) {
+                          RepositoryRepository repositoryRepo,
+                          MergeRequestRepository mrRepo) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.pipelineService = pipelineService;
@@ -129,6 +150,7 @@ public class PipelineRunner {
         this.jobRepo = jobRepo;
         this.runRepo = runRepo;
         this.repositoryRepo = repositoryRepo;
+        this.mrRepo = mrRepo;
     }
 
     /** 认领分发（5s 轮询；事务内 SKIP LOCKED 抢行 → 交执行线程池） */
@@ -198,14 +220,22 @@ public class PipelineRunner {
             if (job == null) {
                 return; // 作业被清理（rerun 重置）：无事可做
             }
+            // 0) 毒作业防护（M4-INC2）：认领已 attempt+1；达上限直接 failed 不执行——
+            //    防崩溃循环重派（启动恢复 requeue 反复捞起同一作业）刷屏拖垮 Runner
+            if (job.getAttempt() >= maxAttempts) {
+                log.warn("[pipeline-runner] 作业 {} 认领次数 attempt={} 达上限 {}——按毒作业直接 failed",
+                        jobId, job.getAttempt(), maxAttempts);
+                pipelineService.completeJobAndAdvance(jobId, null, "", POISON_JOB_MSG, null, null);
+                return;
+            }
             PipelineRun run = runRepo.findById(job.getRunId()).orElse(null);
             if (run == null) {
-                pipelineService.completeJobAndAdvance(jobId, null, "", "所属流水线运行不存在", null);
+                pipelineService.completeJobAndAdvance(jobId, null, "", "所属流水线运行不存在", null, null);
                 return;
             }
             Repository repo = repositoryRepo.findById(run.getRepoId()).orElse(null);
             if (repo == null) {
-                pipelineService.completeJobAndAdvance(jobId, null, "", "所属仓库不存在", null);
+                pipelineService.completeJobAndAdvance(jobId, null, "", "所属仓库不存在", null, null);
                 return;
             }
 
@@ -219,7 +249,7 @@ public class PipelineRunner {
                 gitPort.exportArchive(repo.getRepoPath(), ref, workspace);
             } catch (Exception e) {
                 pipelineService.completeJobAndAdvance(jobId, null, "",
-                        "工作区导出失败: " + e.getMessage(), null);
+                        "工作区导出失败: " + e.getMessage(), null, null);
                 return;
             }
 
@@ -228,36 +258,54 @@ public class PipelineRunner {
             String tool = toolOf(job.getCmd());
             if (tool != null && !buildExecutor.toolAvailable(tool)) {
                 pipelineService.completeJobAndAdvance(jobId, null, "",
-                        toolUnavailableMsg(tool), null);
+                        toolUnavailableMsg(tool), null, null);
                 return;
             }
 
             // 3) 真实执行：命令为服务端模板（空白分列成参数数组，无 shell）；
-            //    MAVEN_OPTS/-Dmaven.repo.local 不显式注入（容器 HOME=/root，.m2 缓存卷天然生效）
-            BuildCommandExecutor.Outcome out = buildExecutor.run(
-                    PipelineJobTemplates.split(job.getCmd()), workspace, JOB_TIMEOUT, LOG_TAIL_LINES);
+            //    MAVEN_OPTS/-Dmaven.repo.local 不显式注入（容器 HOME=/root，.m2 缓存卷天然生效）；
+            //    test 阶段 maven 走覆盖率注入形态（agent 探测存在才注入 -DargLine）
+            boolean testMaven = "test".equals(job.getStage()) && "maven".equals(run.getBuildSystem());
+            BuildCommandExecutor.Outcome out;
+            boolean agentInjected = false;
+            if (testMaven) {
+                BuildCommandExecutor.TestRunOutcome testRun =
+                        buildExecutor.runMavenTestWithCoverage(
+                                PipelineJobTemplates.split(job.getCmd()), workspace, JOB_TIMEOUT, LOG_TAIL_LINES);
+                out = testRun.outcome();
+                agentInjected = testRun.agentInjected();
+            } else {
+                out = buildExecutor.run(
+                        PipelineJobTemplates.split(job.getCmd()), workspace, JOB_TIMEOUT, LOG_TAIL_LINES);
+            }
 
             // 4) surefire 聚合（test 阶段 + maven 体系；npm 体系跳过——无 surefire 报告）
             TestSummary summary = null;
-            if ("test".equals(job.getStage()) && "maven".equals(run.getBuildSystem())) {
+            if (testMaven) {
                 String dir = run.getWorkdir() == null ? "" : run.getWorkdir();
                 summary = SurefireReportParser.parse(workspace.resolve(dir));
             }
 
-            // 5) 收口 + 链式推进（build 成功建 test；终态聚合 run + stages 快照回写）
-            boolean runFinished = pipelineService.completeJobAndAdvance(
-                    jobId, out.exitCode(), out.logTail(), out.errorMsg(), summary);
+            // 5) 覆盖率真实计算（M4-INC2 · 仅 test 作业成功；降级不阻塞收口）：
+            //    exec→cli report→xml 解析→（关联 MR 时）变更行∩覆盖行
+            CoverageResult coverage = testMaven && out.success()
+                    ? assembleCoverage(workspace, run, repo, agentInjected)
+                    : null;
 
-            // 6) MR 门禁真实回填（run 终态 + 有真实单测聚合；无报告不动门禁；
+            // 6) 收口 + 链式推进（build 成功建 test；终态聚合 run + stages 快照回写含覆盖率摘要）
+            boolean runFinished = pipelineService.completeJobAndAdvance(
+                    jobId, out.exitCode(), out.logTail(), out.errorMsg(), summary, coverage);
+
+            // 7) MR 门禁真实回填（run 终态 + 有真实单测聚合；无报告不动门禁；
             //    独立事务、失败仅 WARN——不回滚已收口的作业状态）
             if (runFinished && summary != null) {
-                pipelineService.feedMrGateIfLinkedReal(run.getId(), summary);
+                pipelineService.feedMrGateIfLinkedReal(run.getId(), summary, coverage);
             }
         } catch (Exception e) {
             log.error("[pipeline-runner] 作业 {} 执行器异常", jobId, e);
             try {
                 pipelineService.completeJobAndAdvance(jobId, null, "",
-                        "执行器异常: " + e.getMessage(), null);
+                        "执行器异常: " + e.getMessage(), null, null);
             } catch (Exception suppressed) {
                 log.error("[pipeline-runner] 作业 {} 异常收口失败（将滞留 running，待 M4-INC2 崩溃恢复）: {}",
                         jobId, suppressed.getMessage());
@@ -267,6 +315,61 @@ public class PipelineRunner {
                 deleteRecursively(workspace); // 作业结束整卷回收（成功/失败一律清理）
             }
         }
+    }
+
+    // ==================== 覆盖率组装（M4-INC2） ====================
+
+    /**
+     * 组装覆盖率结果：agent 注入 → 报告生成 → xml 解析 →（关联 MR 时）patch 交集。
+     * 全链任一环失败返回降级实例（agentOk/execOk 标记真实状况），绝不抛出——不阻塞收口。
+     */
+    private CoverageResult assembleCoverage(Path workspace, PipelineRun run, Repository repo,
+                                            boolean agentInjected) {
+        if (!agentInjected) {
+            return new CoverageResult(0d, null, false, false);
+        }
+        JacocoXmlParser.Result parsed = null;
+        try {
+            BuildCommandExecutor.Outcome gen = buildExecutor.generateCoverageReport(workspace);
+            if (!gen.success()) {
+                log.warn("[pipeline-runner] 覆盖率报告生成降级: {}", gen.errorMsg());
+            } else {
+                parsed = JacocoXmlParser.parse(workspace.resolve("jacoco.xml"));
+                if (parsed == null) {
+                    log.warn("[pipeline-runner] jacoco.xml 解析失败——覆盖率降级");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[pipeline-runner] 覆盖率链路异常（降级）: {}", e.getMessage());
+        }
+        if (parsed == null) {
+            return new CoverageResult(0d, null, true, false);
+        }
+        try {
+            return new CoverageResult(parsed.totalPercent(), patchPercent(run, repo, parsed), true, true);
+        } catch (Exception e) {
+            // MR diff 取失败（分支被删等）：无法算 patch 真值——整体降级沿用旧值，
+            // 不冒充 n/a（n/a 仅留给「确无涉代码变更」的分母 0 场景）
+            log.warn("[pipeline-runner] MR 变更行计算失败（覆盖率整体降级）: {}", e.getMessage());
+            return new CoverageResult(0d, null, true, false);
+        }
+    }
+
+    /**
+     * patch 覆盖率（docs/v2/11 §3.4）：MR source/target 三路 diff 的 Java 主源码新增行
+     * ∩ jacoco 覆盖行 / ∩ jacoco 可执行行。无关联 MR → null（门禁回填本就不触发，
+     * stages summary 透出 patch n/a）。
+     */
+    private Double patchPercent(PipelineRun run, Repository repo, JacocoXmlParser.Result jacoco) {
+        if (run.getMrId() == null) {
+            return null;
+        }
+        MergeRequest mr = mrRepo.findById(run.getMrId()).orElse(null);
+        if (mr == null) {
+            return null; // MR 已删：门禁回填侧同样会 404，patch 值无消费方
+        }
+        GitDiffResult diff = gitPort.diff(repo.getRepoPath(), mr.getTargetBranch(), mr.getSourceBranch());
+        return DiffLineExtractor.patchCoveragePercent(DiffLineExtractor.changedJavaMainLines(diff), jacoco);
     }
 
     // ==================== 小工具 ====================

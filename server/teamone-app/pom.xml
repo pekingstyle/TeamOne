@@ -8,6 +8,11 @@
     <artifactId>teamone-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
+
+  <properties>
+    <!-- 迟绑定缺省（surefire @{argLine} 要求属性存在；平台流水线经 -DargLine 注入 JaCoCo agent 时覆盖） -->
+    <argLine></argLine>
+  </properties>
   <artifactId>teamone-app</artifactId>
   <name>TeamOne :: App</name>
   <description>Boot 装配：安全/Flyway/WS 端点/切面/种子数据</description>
@@ -66,7 +71,9 @@
           <!-- IT 容器化执行（WSL docker.sock / CI）时 Mockito inline MockMaker 需要
                允许 byte-buddy 自附着，否则报 "JDK does not supply a working agent
                attachment mechanism"；-XX:+EnableDynamicAgentLoading 兼容新 JDK 提示 -->
-          <argLine>-Djdk.attach.allowAttachSelf=true -XX:+EnableDynamicAgentLoading</argLine>
+          <!-- @{argLine} 迟绑定：把命令行 -DargLine（平台流水线注入的 JaCoCo agent）拼在
+               自有参数前——硬编码会整体覆盖注入导致覆盖率数据丢失（⑥l E2E 实证踩坑） -->
+          <argLine>@{argLine} -Djdk.attach.allowAttachSelf=true -XX:+EnableDynamicAgentLoading</argLine>
         </configuration>
         <executions>
           <execution>

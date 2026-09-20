@@ -11,6 +11,7 @@ import { ApiError } from '../../api/client'
 import {
   normRunStatus, pipelinesApi, usePipeline, usePipelines, useRepoMyPermissions, useRepos,
   type RemotePipelineJob,
+  type RemoteStage,
 } from '../../api/queries'
 import { Avatar, Badge, Btn, Card, Empty, PageHeader, Pill, StatusDot, runStatusText } from '../../components/ui'
 import type { PageProps } from '../../nav'
@@ -57,6 +58,18 @@ function jobDurSec(j: RemotePipelineJob): number | undefined {
   const e = j.finishedAt ? new Date(j.finishedAt).getTime() : Date.now()
   if (isNaN(s) || isNaN(e)) return undefined
   return Math.max(0, Math.round((e - s) / 1000))
+}
+
+/** ⑥l-B 覆盖率摘要提取：从 run 详情 stages[].summary 正则匹配 "覆盖率 total 78.3% / patch 85.0%"
+ *  （patch 可为 — 表示无变更行）；无匹配返回 undefined，缺省安全不渲染 */
+function stageCoverage(stages: RemoteStage[] | undefined): { total: string; patch: string } | undefined {
+  if (!stages) return undefined
+  for (const s of stages) {
+    if (!s.summary) continue
+    const m = s.summary.match(/覆盖率 total ([\d.]+)%.*patch ([\d.]+|n\/a[（(][^）)]*[）)]?|—)/)
+    if (m) return { total: m[1], patch: m[2] }
+  }
+  return undefined
 }
 
 /** 统一的流水线视图展示接口（抹平后端真实 API 与前端 Mock 数据差异） */
@@ -373,6 +386,8 @@ function RunExpand({ runId, onOpenLog }: { runId: string; onOpenLog: (jobId: str
   const jobs = run.jobs
   const runSt = normRunStatus(run.status)
   const anyActive = runSt === 'running' || runSt === 'pending'
+  // ⑥l-B 覆盖率摘要：stages[].summary 含覆盖率文本时在 test 作业行尾显示小徽标（无匹配不渲染）
+  const cov = stageCoverage(run.stages)
   return (
     <div className="border-t border-line bg-ink-900/40 px-4 py-3">
       <div className="mb-2 flex items-center justify-between">
@@ -386,7 +401,7 @@ function RunExpand({ runId, onOpenLog }: { runId: string; onOpenLog: (jobId: str
       ) : (
         <ol className="space-y-1.5">
           {jobs.map((j) => (
-            <JobTimelineRow key={j.id} job={j} onOpenLog={() => onOpenLog(j.id)} />
+            <JobTimelineRow key={j.id} job={j} cov={cov} onOpenLog={() => onOpenLog(j.id)} />
           ))}
         </ol>
       )}
@@ -394,10 +409,21 @@ function RunExpand({ runId, onOpenLog }: { runId: string; onOpenLog: (jobId: str
   )
 }
 
-/** 时间线单作业行：stage 徽标 + name + 状态胶囊 + exitCode + 耗时 + 日志按钮 */
-function JobTimelineRow({ job, onOpenLog }: { job: RemotePipelineJob; onOpenLog: () => void }) {
+/** 时间线单作业行：stage 徽标 + name + 状态胶囊 + exitCode + 耗时 + （test 行）覆盖率摘要徽标 + 日志按钮 */
+function JobTimelineRow({
+  job,
+  cov,
+  onOpenLog,
+}: {
+  job: RemotePipelineJob
+  /** ⑥l-B 覆盖率摘要（stages[].summary 正则提取）；仅 test 阶段作业行渲染 */
+  cov?: { total: string; patch: string }
+  onOpenLog: () => void
+}) {
   const st = normRunStatus(job.status)
   const dur = jobDurSec(job)
+  const showCov = job.stage === 'test' && !!cov
+  const patchText = cov ? (cov.patch === '—' ? '—' : `${cov.patch}%`) : ''
   return (
     <li className="flex flex-wrap items-center gap-2 rounded-md border border-line bg-ink-850 px-3 py-2">
       <Pill tone={job.stage === 'test' ? 'teal' : 'info'}>{job.stage === 'test' ? 'Test' : 'Build'}</Pill>
@@ -411,10 +437,18 @@ function JobTimelineRow({ job, onOpenLog }: { job: RemotePipelineJob; onOpenLog:
       <span className="text-[11px] tabular-nums text-txt-low">
         {st === 'running' && dur !== undefined ? `${fmtDur(dur)}…` : fmtDur(dur)}
       </span>
+      {showCov && cov && (
+        <span
+          title={`总覆盖率 ${cov.total}% · patch 覆盖率 ${cov.patch === '—' ? '—（无变更行）' : cov.patch + '%'}`}
+          className="ml-auto inline-flex shrink-0 items-center rounded-full bg-info-bg px-2 py-0.5 text-[11px] font-semibold tabular-nums text-cat-teal"
+        >
+          总覆盖 {cov.total}% · patch {patchText}
+        </span>
+      )}
       <button
         type="button"
         onClick={onOpenLog}
-        className="ml-auto inline-flex shrink-0 cursor-pointer items-center gap-1 rounded border border-line px-1.5 py-0.5 text-[11px] text-txt-mid transition-colors hover:border-brand/50 hover:text-brand"
+        className={`${showCov ? '' : 'ml-auto'} inline-flex shrink-0 cursor-pointer items-center gap-1 rounded border border-line px-1.5 py-0.5 text-[11px] text-txt-mid transition-colors hover:border-brand/50 hover:text-brand`}
       >
         <TerminalSquare size={11} />日志
       </button>

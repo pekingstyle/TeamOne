@@ -1,5 +1,6 @@
 package cn.teamone.eng.app;
 
+import cn.teamone.eng.app.PipelineService.CoverageResult;
 import cn.teamone.eng.app.PipelineService.TestSummary;
 import cn.teamone.eng.domain.MergeCheck;
 import cn.teamone.eng.domain.PipelineJob;
@@ -224,7 +225,7 @@ class PipelineServiceRealExecutionTest {
         when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
         when(jobRepo.findFirstByRunIdOrderBySeqDesc(RUN_ID)).thenReturn(Optional.of(buildJob));
 
-        Boolean runFinished = service.completeJobAndAdvance(buildJob.getId(), 0, "BUILD SUCCESS", null, null);
+        Boolean runFinished = service.completeJobAndAdvance(buildJob.getId(), 0, "BUILD SUCCESS", null, null, null);
 
         assertFalse(runFinished, "build 成功后 run 未收口（test 待执行）");
         assertEquals("success", buildJob.getStatus());
@@ -248,8 +249,7 @@ class PipelineServiceRealExecutionTest {
         PipelineRun r = run("maven", "server");
         when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
 
-        boolean runFinished = service.completeJobAndAdvance(buildJob.getId(), 1, "BUILD FAILURE", null, null);
-
+        boolean runFinished = service.completeJobAndAdvance(buildJob.getId(), 1, "BUILD FAILURE", null, null, null);
         assertTrue(runFinished);
         assertEquals("failed", buildJob.getStatus());
         assertEquals(1, savedJobs.size(), "失败不建后续作业");
@@ -282,7 +282,8 @@ class PipelineServiceRealExecutionTest {
 
         TestSummary summary = new TestSummary(15, 0, 0, 2, 3);
         boolean runFinished = service.completeJobAndAdvance(
-                testJob.getId(), 0, "[INFO] Tests run: 15", null, summary);
+                testJob.getId(), 0, "[INFO] Tests run: 15", null, summary,
+                new CoverageResult(78.3, 85.0, true, true));
 
         assertTrue(runFinished);
         PipelineRun last = savedRuns.get(savedRuns.size() - 1);
@@ -293,6 +294,9 @@ class PipelineServiceRealExecutionTest {
         assertEquals("passed", testStage.get("status"));
         // 展示字段形状保持（success→passed），单测聚合计入 summary 注记
         assertTrue(String.valueOf(testStage.get("summary")).contains("Tests run: 15"));
+        // M4-INC2：真实覆盖率摘要计入 test 阶段 summary（total 78.3% / patch 85.0%）
+        assertTrue(String.valueOf(testStage.get("summary")).contains("覆盖率 total 78.3% / patch 85.0%"),
+                String.valueOf(testStage.get("summary")));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> stageJobs = (List<Map<String, Object>>) testStage.get("jobs");
         assertEquals("passed", stageJobs.get(0).get("status"));
@@ -304,14 +308,14 @@ class PipelineServiceRealExecutionTest {
         done.setStatus("success");
         when(jobRepo.findById(done.getId())).thenReturn(Optional.of(done));
 
-        assertFalse(service.completeJobAndAdvance(done.getId(), 0, "x", null, null));
+        assertFalse(service.completeJobAndAdvance(done.getId(), 0, "x", null, null, null));
         verify(pipelineRepo, never()).findById(any());
     }
 
-    // ==================== MR 门禁真实回填 ====================
+    // ==================== MR 门禁真实回填（M4-INC2：覆盖率真实值/降级两分支） ====================
 
     @Test
-    void feedMrGate_surefireAggregation_withCarriedCoverageAndUrlNote() {
+    void feedMrGate_degradedCoverage_carriesOldValuesAndSimulatedNote() {
         PipelineRun r = run("maven", "server");
         r.setMrId(MR_ID);
         when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
@@ -322,7 +326,9 @@ class PipelineServiceRealExecutionTest {
         check.setPayload(payload);
         when(checkRepo.findByMrIdAndKind(MR_ID, "unit_test")).thenReturn(Optional.of(check));
 
-        boolean fed = service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(15, 1, 2, 3, 2));
+        // agent/exec 缺失（M4-INC2 降级矩阵）→ 沿用 ⑥k 行为：旧值 + 原 simulated 注记
+        boolean fed = service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(15, 1, 2, 3, 2),
+                new CoverageResult(0d, null, false, false));
 
         assertTrue(fed);
         ArgumentCaptor<UnitTestReportRequest> cap = ArgumentCaptor.forClass(UnitTestReportRequest.class);
@@ -331,10 +337,70 @@ class PipelineServiceRealExecutionTest {
         assertEquals(15, req.total(), "tests=surefire 真实聚合");
         assertEquals(3, req.failed(), "failures+errors");
         assertFalse(req.passed(), "errors+failures>0 → 不通过");
-        assertEquals(82.5, req.coverageTotal(), "沿用 MR 既有整体覆盖率");
-        assertEquals(88.0, req.coveragePatch(), "沿用 MR 既有 patch 覆盖率（真实计算 M4-INC2）");
+        assertEquals(82.5, req.coverageTotal(), "降级：沿用 MR 既有整体覆盖率");
+        assertEquals(88.0, req.coveragePatch(), "降级：沿用 MR 既有 patch 覆盖率");
         assertTrue(req.reportUrl().contains("/pipelines/" + RUN_ID));
-        assertTrue(req.reportUrl().contains("coverage=simulated(真实计算 M4-INC2);tests=surefire"));
+        assertTrue(req.reportUrl().contains("coverage=simulated(真实计算 M4-INC2);tests=surefire"),
+                "降级保留原 simulated 注记: " + req.reportUrl());
+    }
+
+    @Test
+    void feedMrGate_realCoverage_feedsJacocoValuesWithRealNote() {
+        PipelineRun r = run("maven", "server");
+        r.setMrId(MR_ID);
+        when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
+        when(checkRepo.findByMrIdAndKind(MR_ID, "unit_test")).thenReturn(Optional.empty());
+
+        boolean fed = service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(15, 0, 0, 3, 2),
+                new CoverageResult(78.3, 85.0, true, true));
+
+        assertTrue(fed);
+        ArgumentCaptor<UnitTestReportRequest> cap = ArgumentCaptor.forClass(UnitTestReportRequest.class);
+        verify(mergeRequestService).uploadUnitTestReport(eq(MR_ID), cap.capture());
+        UnitTestReportRequest req = cap.getValue();
+        assertTrue(req.passed());
+        assertEquals(78.3, req.coverageTotal(), "coverageTotal=jacoco 真实值");
+        assertEquals(85.0, req.coveragePatch(), "coveragePatch=变更行∩覆盖行 真实值");
+        assertTrue(req.reportUrl().contains("tests=surefire;coverage=jacoco"),
+                "真实注记替换 simulated: " + req.reportUrl());
+        assertFalse(req.reportUrl().contains("simulated"));
+    }
+
+    @Test
+    void feedMrGate_realCoverageNullPatch_feedsHundredWithNaNote() {
+        PipelineRun r = run("maven", "server");
+        r.setMrId(MR_ID);
+        when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
+        when(checkRepo.findByMrIdAndKind(MR_ID, "unit_test")).thenReturn(Optional.empty());
+
+        // 分母 0（变更行∩可执行行=0，无涉代码变更）：patch=null → 空真约定 100.0，门禁不因此挂
+        boolean fed = service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(15, 0, 0, 3, 2),
+                new CoverageResult(61.2, null, true, true));
+
+        assertTrue(fed);
+        ArgumentCaptor<UnitTestReportRequest> cap = ArgumentCaptor.forClass(UnitTestReportRequest.class);
+        verify(mergeRequestService).uploadUnitTestReport(eq(MR_ID), cap.capture());
+        UnitTestReportRequest req = cap.getValue();
+        assertTrue(req.passed(), "无涉代码变更时 patch 不拖挂门禁");
+        assertEquals(61.2, req.coverageTotal());
+        assertEquals(100.0, req.coveragePatch(), "R8 协议无空态——n/a 按空真约定回填 100.0");
+        assertTrue(req.reportUrl().contains("patch=n/a(无涉代码变更)"), req.reportUrl());
+    }
+
+    @Test
+    void feedMrGate_nullCoverageBehavesAsDegraded() {
+        PipelineRun r = run("maven", "server");
+        r.setMrId(MR_ID);
+        when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
+        when(checkRepo.findByMrIdAndKind(MR_ID, "unit_test")).thenReturn(Optional.empty());
+
+        boolean fed = service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(5, 0, 0, 0, 1), null);
+
+        assertTrue(fed);
+        ArgumentCaptor<UnitTestReportRequest> cap = ArgumentCaptor.forClass(UnitTestReportRequest.class);
+        verify(mergeRequestService).uploadUnitTestReport(eq(MR_ID), cap.capture());
+        assertEquals(0.0, cap.getValue().coverageTotal(), "无旧值时按 0 透出（门禁不误通过）");
+        assertEquals(0.0, cap.getValue().coveragePatch());
     }
 
     @Test
@@ -343,14 +409,16 @@ class PipelineServiceRealExecutionTest {
         r.setMrId(MR_ID);
         when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
 
-        assertFalse(service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(0, 0, 0, 0, 0)));
+        assertFalse(service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(0, 0, 0, 0, 0),
+                new CoverageResult(78.3, 85.0, true, true)));
         verify(mergeRequestService, never()).uploadUnitTestReport(any(), any());
     }
 
     @Test
     void feedMrGate_noMrLinked_noop() {
         when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(run("maven", "server")));
-        assertFalse(service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(5, 0, 0, 0, 1)));
+        assertFalse(service.feedMrGateIfLinkedReal(RUN_ID, new TestSummary(5, 0, 0, 0, 1),
+                new CoverageResult(78.3, 85.0, true, true)));
         verify(mergeRequestService, never()).uploadUnitTestReport(any(), any());
     }
 }

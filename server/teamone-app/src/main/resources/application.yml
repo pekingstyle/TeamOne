@@ -90,7 +90,7 @@ teamone:
     #     pom.xml→maven、package.json→npm，Dockerfile 不计构建，都不中→unknown 直接 failed），
     #     建 eng.pipeline_job 作业链（构建→单测），内嵌 Runner（SKIP LOCKED 认领 + git archive
     #     导出工作区 + mvn/npm 真实执行 + surefire 聚合）驱动，作业结果回写 run/stages，
-    #     并以真实单测数据回填 MR 门禁（覆盖率沿用旧值，真实计算 M4-INC2）。
+    #     并以真实单测数据回填 MR 门禁。
     #   true = 旧模拟路径——executePipelineStages 同步模拟恒 passed + 演示数据（82/82.5%/88.0%）
     #     回填 MR 门禁，不建作业行（IT/降级用）。历史模拟 run 的 jobs 恒空，前端缺省安全。
     simulated: ${TEAMONE_PIPELINE_SIMULATED:false}
@@ -105,6 +105,21 @@ teamone:
     tool-image:
       maven: ${TEAMONE_PIPELINE_MAVEN_IMAGE:maven:3.9-eclipse-temurin-17}
       npm: ${TEAMONE_PIPELINE_NPM_IMAGE:}
+    # 作业容器资源上限（M4-INC2 执行安全加固）：docker run --memory/--cpus 原样透传——
+    # 防单个构建进程挤垮宿主（初版进程内直跑曾两次拖垮 WSL VM 的教训；值须为 docker 合法格式）
+    job-memory: ${TEAMONE_PIPELINE_JOB_MEMORY:2g}
+    job-cpus: ${TEAMONE_PIPELINE_JOB_CPUS:2}
+    # 毒作业防护（M4-INC2）：作业被认领次数（attempt，SKIP LOCKED 认领时 +1）达上限后
+    # 直接置 failed 不再执行——防崩溃循环重派的坏作业反复拖垮 Runner
+    max-attempts: ${TEAMONE_PIPELINE_MAX_ATTEMPTS:3}
+    # JaCoCo 覆盖率链路（M4-INC2 · R8 门禁真实化 docs/v2/11 §3.4「patch=变更行∩覆盖行」）：
+    # agent-runtime 与 cli-nodeps jar 由运维预热入 teamone-m2 卷（容器内
+    # /root/.m2/repository/org/jacoco/org.jacoco.agent|cli/{version}/…），版本可配；
+    # test 阶段 maven 注入 -DargLine=-javaagent:…（探测容器确认存在才注入）；
+    # agent 缺失 / exec 缺失（含被建工程 pom 硬编码 argLine 覆盖）→ 覆盖率诚实降级
+    # （沿用 MR 旧值 + simulated 注记），单测本身不被阻塞
+    jacoco:
+      version: ${TEAMONE_PIPELINE_JACOCO_VERSION:0.8.12}
   mr:
     gate:
       # 单测门禁双阈值（百分比）：整体覆盖率 / patch（增量）覆盖率——

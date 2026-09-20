@@ -50,7 +50,8 @@ import java.util.UUID;
  *     （unknown 直接 failed 不建作业）→ 建首作业（seq=1, build）→ 内嵌 Runner
  *     （{@code cn.teamone.eng.runner.PipelineRunner}，SKIP LOCKED 认领）异步执行
  *     mvn/npm 真实命令 → {@link #completeJobAndAdvance} 链式推进（build 成功建 test）
- *     → run 聚合收口 + stages jsonb 展示快照回写 → surefire 聚合真实回填 MR 门禁
+ *     → run 聚合收口 + stages jsonb 展示快照回写 → surefire 聚合 + JaCoCo 覆盖率
+ *     （M4-INC2：patch=变更行∩覆盖行）真实回填 MR 门禁
  *     （{@link #feedMrGateIfLinkedReal}）。</li>
  *   <li>模拟路径（true，IT/降级）：executePipelineStages 同步模拟恒 passed +
  *     演示数据回填门禁（不建作业行，前端 jobs 恒空）。</li>
@@ -479,7 +480,8 @@ public class PipelineService {
      * 自动使 MR 门禁中的单测卡点（Gate）达成并通过。
      *
      * <p>【仅模拟路径】演示数据（82 用例 / 82.5% / 88.0%）硬编码——真实路径走
-     * {@link #feedMrGateIfLinkedReal(UUID, TestSummary)}（surefire 真实聚合 + 沿用既有覆盖率）。</p>
+     * {@link #feedMrGateIfLinkedReal(UUID, TestSummary, CoverageResult)}（surefire 真实聚合 +
+     * JaCoCo 真实覆盖率，M4-INC2）。</p>
      *
      * @param run 流水线实体
      */
@@ -529,6 +531,27 @@ public class PipelineService {
     }
 
     /**
+     * 覆盖率结果（M4-INC2 · Runner 收口前组装；JaCoCo 链路真实值或诚实降级标记）。
+     *
+     * <p>{@code agentOk}=agent 探测存在并注入 {@code -DargLine}；{@code execOk} 覆盖
+     * exec 产出 → 报告生成 → xml 解析全链（任一环缺失即 false）。两者皆真才算真实值
+     * （{@link #real()}）——任一为假时 MR 门禁沿用旧值 + simulated 注记（⑥k 行为），
+     * 单测本身不受影响。</p>
+     *
+     * @param totalPercent 全局行覆盖率百分数（非真实时无意义，置 0）
+     * @param patchPercent patch 覆盖率百分数；null=无涉代码变更（分母 0）或无 MR 上下文
+     * @param agentOk      agent 注入是否成功
+     * @param execOk       exec→报告→解析链路是否完整
+     */
+    public record CoverageResult(double totalPercent, Double patchPercent, boolean agentOk, boolean execOk) {
+
+        /** 覆盖率链路完整（真实值可回填 MR 门禁与 stages summary） */
+        public boolean real() {
+            return agentOk && execOk;
+        }
+    }
+
+    /**
      * 链式建下一作业（run 内 seq 递增）。
      *
      * <p>调用点：真实 trigger（seq=1, build）、rerun 重置后（seq=1, build）、build 作业成功后
@@ -556,21 +579,22 @@ public class PipelineService {
     /**
      * Runner 收口单个作业并推进链（M4-INC1 · docs/v2/11 §3.1 链式推进）。
      *
-     * <p>时序：Runner 执行完进程（含超时/工具缺失失败）与 surefire 解析后调用本方法。
+     * <p>时序：Runner 执行完进程（含超时/工具缺失失败）与 surefire/jacoco 解析后调用本方法。
      * 单事务内完成：作业终态落库 → 成功且 build 则建 test 作业（run 保持 running）→
      * 否则收口 run（任一 failed → failed，全 success → passed）并回写 stages jsonb
-     * 展示快照。幂等：仅 running 态作业可收口（重复回调/认领竞态直接跳过）。</p>
+     * 展示快照（含覆盖率摘要）。幂等：仅 running 态作业可收口（重复回调/认领竞态直接跳过）。</p>
      *
      * @param jobId       作业 ID
      * @param exitCode    进程退出码（超时/未启动为 null，视为失败）
      * @param logTail     合流输出尾部文本（截 120 行落库）
      * @param errorMsg    失败原因（工具链缺失/超时/工作区导出失败等；成功为 null）
      * @param testSummary test 阶段的 surefire 聚合（非 test 阶段/无报告为 null）
+     * @param coverage    test 阶段的覆盖率结果（M4-INC2；非 test 阶段/降级/失败为 null）
      * @return run 是否已在本调用收口（Runner 据此决定是否回填 MR 门禁）
      */
     @Transactional
     public boolean completeJobAndAdvance(UUID jobId, Integer exitCode, String logTail, String errorMsg,
-                                         TestSummary testSummary) {
+                                         TestSummary testSummary, CoverageResult coverage) {
         PipelineJob job = jobRepo.findById(jobId).orElse(null);
         if (job == null || !"running".equals(job.getStatus())) {
             return false; // 幂等保护：仅 running 可收口
@@ -607,18 +631,20 @@ public class PipelineService {
             }
             return false;
         }
-        finalizeRun(run, testSummary);
+        finalizeRun(run, testSummary, coverage);
         return true;
     }
 
     /**
      * 收口 run：作业聚合状态 + stages jsonb 展示快照回写（保持既有展示字段形状
-     * name/status/durationSec/jobs[id|name|status|durationSec|logs]，另附 summary 注记）。
+     * name/status/durationSec/jobs[id|name|status|durationSec|logs]，另附 summary 注记——
+     * test 阶段带单测聚合与真实覆盖率摘要）。
      *
      * @param run          运行实体
      * @param testSummary  test 阶段 surefire 聚合（可为 null：无报告/npm 体系/构建失败早收）
+     * @param coverage     test 阶段覆盖率结果（可为 null：非 test/降级/失败）
      */
-    private void finalizeRun(PipelineRun run, TestSummary testSummary) {
+    private void finalizeRun(PipelineRun run, TestSummary testSummary, CoverageResult coverage) {
         List<PipelineJob> jobs = jobRepo.findByRunIdOrderBySeqAsc(run.getId());
         boolean anyFailed = false;
         long durationSec = 0;
@@ -630,14 +656,15 @@ public class PipelineService {
         run.setDurationSec((int) Math.min(durationSec, Integer.MAX_VALUE));
         run.setFinishedAt(Instant.now());
         run.setUpdatedAt(Instant.now());
-        run.setStages(stagesSnapshot(jobs, testSummary));
+        run.setStages(stagesSnapshot(jobs, testSummary, coverage));
         pipelineRepo.save(run);
         log.info("[pipeline] run={} 收口 status={} jobs={}（任一 failed→failed）",
                 run.getId(), run.getStatus(), jobs.size());
     }
 
     /** 由作业结果重建 stages jsonb 展示快照（真实模式回写形状） */
-    private List<Map<String, Object>> stagesSnapshot(List<PipelineJob> jobs, TestSummary testSummary) {
+    private List<Map<String, Object>> stagesSnapshot(List<PipelineJob> jobs, TestSummary testSummary,
+                                                     CoverageResult coverage) {
         List<Map<String, Object>> stages = new ArrayList<>();
         Map<String, List<Map<String, Object>>> byStage = new LinkedHashMap<>();
         for (PipelineJob job : jobs) {
@@ -659,14 +686,15 @@ public class PipelineService {
             stage.put("status", stageFailed ? "failed" : (stageRunning ? "running" : "passed"));
             stage.put("durationSec", stageDur);
             stage.put("jobs", e.getValue());
-            stage.put("summary", stageSummary(e.getKey(), e.getValue(), testSummary));
+            stage.put("summary", stageSummary(e.getKey(), e.getValue(), testSummary, coverage));
             stages.add(stage);
         }
         return stages;
     }
 
-    /** 阶段级注记：作业退出码 + 单测聚合（surefire）或无报告说明 */
-    private String stageSummary(String stage, List<Map<String, Object>> jobMaps, TestSummary testSummary) {
+    /** 阶段级注记：作业退出码 + 单测聚合（surefire）+ 真实覆盖率摘要（jacoco，M4-INC2） */
+    private String stageSummary(String stage, List<Map<String, Object>> jobMaps, TestSummary testSummary,
+                                CoverageResult coverage) {
         Object firstStatus = jobMaps.isEmpty() ? null : jobMaps.get(jobMaps.size() - 1).get("status");
         StringBuilder sb = new StringBuilder();
         sb.append(jobMaps.size()).append(" 个作业，末态 ").append(firstStatus);
@@ -678,6 +706,17 @@ public class PipelineService {
                         .append(", Skipped: ").append(testSummary.skipped());
             } else {
                 sb.append("；未发现 surefire 报告（MR 门禁未回填，npm 体系不解析 surefire）");
+            }
+            if (coverage != null && coverage.real()) {
+                sb.append("；覆盖率 total ")
+                        .append(String.format(java.util.Locale.ROOT, "%.1f", coverage.totalPercent()))
+                        .append("% / patch ");
+                if (coverage.patchPercent() != null) {
+                    sb.append(String.format(java.util.Locale.ROOT, "%.1f", coverage.patchPercent()))
+                            .append("%");
+                } else {
+                    sb.append("n/a（无涉代码变更）");
+                }
             }
         }
         return sb.toString();
@@ -720,19 +759,24 @@ public class PipelineService {
     }
 
     /**
-     * R8 门禁真实化（最小版 · docs/v2/11 §3.4）：以 surefire 聚合结果回填关联 MR 单测门禁。
+     * R8 门禁真实化（M4-INC2 · docs/v2/11 §3.4）：以 surefire 聚合 + JaCoCo 真实覆盖率回填
+     * 关联 MR 单测门禁。
      *
-     * <p>passed=(errors+failures==0 && tests&gt;0)；coverageTotal/coveragePatch 沿用该 MR
-     * mr_check payload 既有值回填（真实 patch/整体覆盖率计算归 M4-INC2，reportUrl 注明）；
-     * 独立事务、失败只记 WARN——门禁回填失败不影响作业/run 已收口状态。
-     * 无关联 MR / 无报告（tests==0）→ 不动门禁，返回 false。</p>
+     * <p>passed=(errors+failures==0 && tests&gt;0)。覆盖率分两支：{@code coverage.real()}
+     * （agent 注入 + exec→报告→解析链完整）→ coverageTotal/coveragePatch 真实值回填，reportUrl
+     * 注记 {@code tests=surefire;coverage=jacoco}；否则（null/降级）沿用该 MR mr_check payload
+     * 既有值 + 原 simulated 注记（⑥k 行为，agent/exec 缺失不阻塞单测链）。patch=null（变更行
+     * ∩可执行行=0，无涉代码变更）时按空真约定回填 100.0 并注记 {@code patch=n/a}——R8 协议
+     * 字段是 double 无空态，门禁不因「没有可执行变更行」误挂。独立事务、失败只记 WARN——
+     * 门禁回填失败不影响作业/run 已收口状态。无关联 MR / 无报告（tests==0）→ 不动门禁，返回 false。</p>
      *
-     * @param runId   运行 ID
-     * @param summary surefire 聚合摘要
+     * @param runId    运行 ID
+     * @param summary  surefire 聚合摘要
+     * @param coverage 覆盖率结果（M4-INC2；null/降级=沿用旧值）
      * @return 是否实际回填
      */
     @Transactional
-    public boolean feedMrGateIfLinkedReal(UUID runId, TestSummary summary) {
+    public boolean feedMrGateIfLinkedReal(UUID runId, TestSummary summary, CoverageResult coverage) {
         if (summary == null || !summary.hasReports() || summary.tests() <= 0) {
             return false; // 识别失败/无报告：不动 MR 门禁（仅 stages summary 注记）
         }
@@ -745,8 +789,23 @@ public class PipelineService {
             Map<String, Object> old = checkRepo.findByMrIdAndKind(run.getMrId(), "unit_test")
                     .map(MergeCheck::getPayload)
                     .orElse(Map.of());
-            double coverageTotal = asDouble(old.get("coverageTotal"));
-            double coveragePatch = asDouble(old.get("coverageDelta"));
+            boolean real = coverage != null && coverage.real();
+            double coverageTotal = real ? coverage.totalPercent() : asDouble(old.get("coverageTotal"));
+            double coveragePatch;
+            String reportUrl;
+            if (real) {
+                if (coverage.patchPercent() != null) {
+                    coveragePatch = coverage.patchPercent();
+                    reportUrl = "/pipelines/" + run.getId() + " （tests=surefire;coverage=jacoco）";
+                } else {
+                    // 分母 0：空真约定 100.0（门禁不因此挂），注记说明口径
+                    coveragePatch = 100.0;
+                    reportUrl = "/pipelines/" + run.getId() + " （tests=surefire;coverage=jacoco;patch=n/a(无涉代码变更)）";
+                }
+            } else {
+                coveragePatch = asDouble(old.get("coverageDelta"));
+                reportUrl = "/pipelines/" + run.getId() + " （coverage=simulated(真实计算 M4-INC2);tests=surefire）";
+            }
             UnitTestReportRequest report = new UnitTestReportRequest(
                     String.valueOf(run.getMrId()),
                     run.getCommitSha(),
@@ -755,11 +814,12 @@ public class PipelineService {
                     summary.failures() + summary.errors(),
                     coverageTotal,
                     coveragePatch,
-                    "/pipelines/" + run.getId() + " （coverage=simulated(真实计算 M4-INC2);tests=surefire）"
+                    reportUrl
             );
             mergeRequestService.uploadUnitTestReport(run.getMrId(), report);
-            log.info("[pipeline] run={} 以 surefire 真实数据回填 MR !{} 门禁（tests={} failed={}）",
-                    run.getId(), run.getMrId(), summary.tests(), summary.failures() + summary.errors());
+            log.info("[pipeline] run={} 回填 MR !{} 门禁（tests={} failed={}；coverage={}）",
+                    run.getId(), run.getMrId(), summary.tests(), summary.failures() + summary.errors(),
+                    real ? "jacoco 真实值" : "沿用旧值(agent/exec 缺失降级)");
             return true;
         } catch (Exception e) {
             log.warn("[pipeline] failed to feed surefire results to MR !{}: {}", run.getMrId(), e.getMessage());

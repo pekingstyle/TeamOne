@@ -63,6 +63,8 @@ public record MrDetailResponse(
             boolean passed,
             double coverageTotal,
             double coverageDelta,
+            /** 门禁回传统一备注（含 coverage=jacoco/simulated 注记）——⑥l 前端来源徽标数据源 */
+            String reportUrl,
             boolean gatePassed,
             Map<String, Object> exempt
     ) {}
