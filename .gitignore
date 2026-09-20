@@ -1,0 +1,9 @@
+
+# ---- backend / deploy（sync-github 维护）----
+server/**/target/
+logs/
+deploy/.env
+.env
+!.env.example
+.workbuddy/
+backups/

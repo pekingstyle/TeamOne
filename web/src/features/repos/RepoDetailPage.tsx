@@ -243,8 +243,9 @@ export default function RepoDetailPage({ nav, id }: PageProps) {
               <Sparkles size={12} className="mr-0.5" />自研内核
             </Badge>
           )}
-          <Badge tone={visibility === 'private' ? 'neutral' : 'ok'}>
-            {visibility === 'private' ? '私有' : '公开'}
+          {/* ⑥m PM 复走查：可见性三值如实映射（此前 INTERNAL 落入「公开」）；大小写兼容 store 旧数据 */}
+          <Badge tone={visibility?.toUpperCase() === 'PRIVATE' ? 'neutral' : 'ok'}>
+            {visibility?.toUpperCase() === 'PRIVATE' ? '私有' : visibility?.toUpperCase() === 'INTERNAL' ? '内部' : '公开'}
           </Badge>
           {ciEnabled && <Badge tone="brand">CI 已启用</Badge>}
         </div>

@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
-import type { Department, ResourceAction, User } from '../../data/types'
+import type { Department } from '../../data/types'
 import {
-  actionText, componentById, components, departmentById, departments, goalById,
-  productById, products, resourcePermissions,
-  useStore, userById, users, fmt,
+  componentById, departments, goalById,
+  productById, products,
+  useStore, userById, fmt,
 } from '../../data/store'
 import { Avatar, Btn, Card, CardHeader, PageHeader, Pill } from '../../components/ui'
 import type { Nav, PageProps } from '../../nav'
@@ -14,9 +14,12 @@ import {
   useAdminUsers,
   useAuditLogs,
   useMyTokens,
+  usePermMatrix,
+  type PermMatrixCell,
   type RemoteUserSummary,
   type RemoteValidationReport,
 } from '../../api/queries'
+import { useAuth } from '../../api/AuthContext'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -35,41 +38,28 @@ import {
   X,
 } from 'lucide-react'
 
-const ALL_ACTIONS: ResourceAction[] = ['view', 'edit', 'approve', 'release', 'manage']
-const actionCls: Record<ResourceAction, string> = {
-  view: 'text-txt-low', edit: 'text-cat-blue', approve: 'text-warn-deep', release: 'text-cat-purple', manage: 'text-bad',
-}
-const platformRoleText: Record<string, string> = { super_admin: '超级管理员', org_admin: '组织管理员', member: '' }
 const goalBadge = 'cursor-pointer rounded bg-brand-bg px-1.5 py-0.5 text-[11px] font-semibold text-cat-purple hover:bg-brand/20'
 const prodBadge = 'rounded bg-info-bg px-1.5 py-0.5 text-[11px] font-semibold text-cat-blue'
 const compBadge = 'rounded bg-info-bg px-1.5 py-0.5 text-[11px] font-semibold text-cat-teal'
 
-interface MatrixCol { type: 'product' | 'component'; id: string; name: string; sub: string }
-const MATRIX_COLS: MatrixCol[] = [
-  ...products.map((p) => ({ type: 'product' as const, id: p.id, name: p.name, sub: `产品 ${p.key}` })),
-  ...components.map((c) => ({ type: 'component' as const, id: c.id, name: c.name, sub: `组件 · ${productById(c.productId)?.key ?? ''}` })),
-]
-
-/** 简化版四步判定（§6.1 按序短路，默认拒绝）。 */
-function effective(u: User, col: MatrixCol): { actions: ResourceAction[]; source: string } {
-  if (u.platformRole === 'super_admin' || u.platformRole === 'org_admin') {
-    return { actions: ALL_ACTIONS, source: `平台角色 ${platformRoleText[u.platformRole]} → 全部动作` }
-  }
-  const deptId = col.type === 'product'
-    ? productById(col.id)?.departmentId
-    : productById(componentById(col.id)?.productId ?? '')?.departmentId
-  if (deptId && departments.find((d) => d.id === deptId)?.leadId === u.id) {
-    return { actions: ALL_ACTIONS, source: `${departmentById(deptId)?.name}负责人 → 全部动作` }
-  }
-  if (col.type === 'component' && componentById(col.id)?.leadId === u.id) {
-    return { actions: ['view', 'edit', 'approve'], source: '组件负责人 → 查看/编辑/审批' }
-  }
-  const grants = resourcePermissions.filter((g) => g.subjectType === 'user' && g.subjectId === u.id && g.resourceType === col.type && g.resourceId === col.id)
-  if (grants.length > 0) {
-    return { actions: [...new Set(grants.flatMap((g) => g.actions))], source: `ACL 授权（${grants.length} 条）→ 动作并集` }
-  }
-  return { actions: [], source: '默认拒绝（无平台角色 / 部门角色 / ACL）' }
+// ⑥m 矩阵真实化：单元格角色徽标（服务端五步链线格式 → 展示文案/配色；前端不判定）
+const ROLE_TEXT: Record<PermMatrixCell['role'], string> = {
+  owner: 'Owner', maintainer: 'Maintainer', developer: 'Developer', reporter: 'Reporter', '': '—',
 }
+const ROLE_CLS: Record<PermMatrixCell['role'], string> = {
+  owner: 'bg-brand/15 text-cat-purple',
+  maintainer: 'bg-info-bg text-cat-blue',
+  developer: 'bg-info-bg text-cat-teal',
+  reporter: 'bg-ink-700 text-txt-mid',
+  '': '',
+}
+const PLATFORM_ROLE_TEXT: Record<'OWNER' | 'ADMIN' | 'MEMBER', string> = {
+  OWNER: '平台所有者', ADMIN: '平台管理员', MEMBER: '成员',
+}
+const PLATFORM_ROLE_CLS: Record<'OWNER' | 'ADMIN' | 'MEMBER', string> = {
+  OWNER: 'text-cat-purple', ADMIN: 'text-cat-blue', MEMBER: 'text-txt-low',
+}
+const REPO_VISIBILITY_TEXT: Record<string, string> = { PUBLIC: '公开', INTERNAL: '内部', PRIVATE: '私有' }
 
 function DeptCard({ dept, nav }: { dept: Department; nav: Nav }) {
   const lead = userById(dept.leadId)
@@ -120,6 +110,12 @@ export default function TeamPage({ nav }: PageProps) {
   const [userQuery, setUserQuery] = useState('')
   const [userRoleFilter, setUserRoleFilter] = useState<string>('')
   const { data: adminUsersData, refetch: refetchUsers, isLoading: usersLoading } = useAdminUsers(userQuery, undefined, userRoleFilter || undefined)
+  // ⑥m 权限判定矩阵（真实 API：服务端五步链逐用户×逐仓判定）；
+  // QA MUST-FIX 修复：platform:manage 仅 OWNER/ADMIN 可达——非管理员按角色门控查询，
+  // 避免 403 被渲染成误导性「暂无用户」（isError 兜底提示无权限）
+  const { user: meUser } = useAuth()
+  const isPlatformManager = meUser?.platformRole === 'OWNER' || meUser?.platformRole === 'ADMIN'
+  const { data: matrixData, isLoading: matrixLoading, isError: matrixError, refetch: refetchMatrix } = usePermMatrix(isPlatformManager)
   const [showCreateUserModal, setShowCreateUserModal] = useState(false)
   const [newUsername, setNewUsername] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -891,57 +887,87 @@ export default function TeamPage({ nav }: PageProps) {
       )}
 
       {/* ============================================================ */}
-      {/* TAB 6: 权限判定矩阵 (原视图保留) */}
+      {/* TAB 6: 权限判定矩阵（⑥m 真实化：行 = 真实用户 × 列 = 真实仓库，服务端五步链判定，前端只展示） */}
       {/* ============================================================ */}
       {activeTab === 'matrix' && (
         <Card>
           <CardHeader
-            title="权限矩阵"
-            extra={<span className="text-xs text-txt-low">行 = 成员 · 列 = 资源 · 单元格 = 有效动作集合</span>}
+            title="权限判定矩阵"
+            extra={
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-txt-low">行 = 真实用户 · 列 = 平台/真实仓库 · 单元格 = 服务端五步判定链（前端不判定）</span>
+                <Btn variant="ghost" onClick={() => void refetchMatrix()} disabled={matrixLoading}>
+                  <RefreshCw size={13} /> 刷新
+                </Btn>
+              </div>
+            }
           />
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-xs text-txt-low">
-                  <th className="sticky left-0 bg-ink-850 px-4 py-2 font-medium">成员</th>
-                  {MATRIX_COLS.map((c) => (
-                    <th key={c.id} className="min-w-24 px-3 py-2 text-center font-medium">
-                      <div className={c.type === 'product' ? 'font-semibold text-cat-blue' : 'font-semibold text-cat-teal'}>{c.name}</div>
-                      <div className="text-[10px] font-normal text-txt-low">{c.sub}</div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {users.map((u) => (
-                  <tr key={u.id} className="hover:bg-ink-700">
-                    <td className="sticky left-0 bg-ink-850 px-4 py-2">
-                      <span className="flex items-center gap-2">
-                        <Avatar userId={u.id} size={22} />
-                        <span className="font-medium text-txt-hi">{u.name}</span>
-                      </span>
-                    </td>
-                    {MATRIX_COLS.map((col) => {
-                      const eff = effective(u, col)
-                      return (
-                        <td key={col.id} className="px-3 py-2 text-center" title={eff.source}>
-                          {eff.actions.length === 0 ? (
-                            <span className="text-xs text-txt-low/40">—</span>
-                          ) : (
-                            <span className="flex items-center justify-center gap-1 font-mono text-[11px]">
-                              {eff.actions.map((a) => (
-                                <span key={a} className={actionCls[a]}>{actionText[a]}</span>
-                              ))}
-                            </span>
-                          )}
-                        </td>
-                      )
-                    })}
+          {!isPlatformManager ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-10 text-sm text-txt-low">
+              <Shield size={14} /> 无权限查看：权限判定矩阵仅平台管理员（OWNER/ADMIN）可见
+            </div>
+          ) : matrixLoading ? (
+            <div className="px-4 py-10 text-center text-sm text-txt-low">矩阵判定中…</div>
+          ) : matrixError ? (
+            <div className="px-4 py-10 text-center text-sm text-txt-low">矩阵加载失败（接口异常或权限不足），请刷新重试</div>
+          ) : !matrixData || matrixData.users.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-txt-low">暂无用户</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left text-xs text-txt-low">
+                    <th className="sticky left-0 z-10 bg-ink-850 px-4 py-2 font-medium">成员</th>
+                    <th className="min-w-20 px-3 py-2 text-center font-medium">平台</th>
+                    {matrixData.repos.map((r) => (
+                      <th key={r.id} className="min-w-28 px-3 py-2 text-center font-medium">
+                        <div className="font-semibold text-cat-teal">{r.name}</div>
+                        <div className="text-[10px] font-normal text-txt-low">仓库 · {REPO_VISIBILITY_TEXT[r.visibility] ?? r.visibility}</div>
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {matrixData.users.map((u) => (
+                    <tr key={u.id} className="hover:bg-ink-700">
+                      <td className="sticky left-0 z-10 bg-ink-850 px-4 py-2">
+                        <span className="flex items-center gap-2">
+                          <Avatar userId={u.id} size={22} />
+                          <span className="font-medium text-txt-hi">{u.displayName}</span>
+                          <span className="text-xs text-txt-low">@{u.username}</span>
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={`text-[11px] font-semibold ${PLATFORM_ROLE_CLS[u.platformRole]}`}>
+                          {PLATFORM_ROLE_TEXT[u.platformRole]}
+                        </span>
+                      </td>
+                      {matrixData.repos.map((r) => {
+                        const cell = u.memberships[r.id]
+                        if (!cell || !cell.role) {
+                          return (
+                            <td key={r.id} className="px-3 py-2 text-center" title={cell && cell.capCount > 0 ? `无成员角色（visibility 只读兜底，放行动作 ${cell.capCount} 项）` : '默认拒绝（无成员角色；INTERNAL/PUBLIC 仓仅 visibility 只读兜底）'}>
+                              <span className="text-xs text-txt-low/40">{cell && cell.capCount > 0 ? `只读(${cell.capCount})` : '—'}</span>
+                            </td>
+                          )
+                        }
+                        return (
+                          <td key={r.id} className="px-3 py-2 text-center" title={`五步链有效角色 ${ROLE_TEXT[cell.role]} · 放行动作 ${cell.capCount} 项${cell.platformAdmin ? '（平台管理员短路）' : ''}`}>
+                            <span className="inline-flex items-center gap-1">
+                              <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${ROLE_CLS[cell.role]}`}>
+                                {ROLE_TEXT[cell.role]}
+                              </span>
+                              {cell.platformAdmin && <Shield size={11} className="text-warn-deep" />}
+                            </span>
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </Card>
       )}
 

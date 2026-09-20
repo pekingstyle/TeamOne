@@ -2865,3 +2865,44 @@ export const meApi = {
     })
   },
 }
+
+// ---------------- 权限判定矩阵（admin · ⑥m 真实化：行 = 真实用户 × 列 = 真实仓库，服务端五步链判定） ----------------
+
+/** 矩阵单元格：role 为小写线格式（owner/maintainer/developer/reporter），空串 = 无角色（仅剩 visibility 兜底） */
+export interface PermMatrixCell {
+  role: 'owner' | 'maintainer' | 'developer' | 'reporter' | ''
+  capCount: number
+  platformAdmin: boolean
+}
+
+/** 矩阵行：一个真实平台用户及其在每仓的有效角色（memberships 以 repoId 为键） */
+export interface PermMatrixUser {
+  id: string
+  username: string
+  displayName: string
+  platformRole: 'OWNER' | 'ADMIN' | 'MEMBER'
+  memberships: Record<string, PermMatrixCell>
+}
+
+/** 矩阵列：一个真实仓库 */
+export interface PermMatrixRepo {
+  id: string
+  name: string
+  visibility: string
+}
+
+export interface PermMatrix {
+  repos: PermMatrixRepo[]
+  users: PermMatrixUser[]
+}
+
+/** 权限判定矩阵（GET /api/v1/admin/permission-matrix · platform:manage；前端只展示不判定）。
+ * enabled 由调用方按平台角色门控（非 OWNER/ADMIN 必 403，不发无效请求）。 */
+export function usePermMatrix(enabled = true) {
+  return useQuery({
+    queryKey: ['perm-matrix'],
+    queryFn: () => api<PermMatrix>('/api/v1/admin/permission-matrix'),
+    staleTime: 30_000,
+    enabled,
+  })
+}

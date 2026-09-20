@@ -1,38 +1,21 @@
-// 代码域 · 仓库列表页（M2-INC-3 自研 Git 仓储接通；⑥h 建仓批：「新建仓库」假按钮改真弹窗）
+// 代码域 · 仓库列表页（M2-INC-3 自研 Git 仓储接通；⑥h 建仓批：「新建仓库」假按钮改真弹窗；
+// ⑥m PM 复走查：下线 store 原型仓库混排——列表/统计只认真实裸库（虚构仓库与虚构负责人误导研发））
 import { useState } from 'react'
-import { FolderGit2, GitBranch, GitCommitHorizontal, Loader2, Lock, Package, Plus, Star, Sparkles, X } from 'lucide-react'
+import { FolderGit2, GitBranch, GitCommitHorizontal, Loader2, Lock, Plus, Sparkles, X } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { branches, commits, componentById, productById, repos, useStore, userById } from '../../data/store'
-import type { Repo } from '../../data/types'
 import { reposApi, useRepos, type RemoteRepo } from '../../api/queries'
-import { Avatar, Badge, Btn, Card, PageHeader } from '../../components/ui'
+import { Badge, Btn, Card, PageHeader } from '../../components/ui'
 import type { PageProps } from '../../nav'
 
-const langColor: Record<string, string> = { Java: '#b07219', TypeScript: '#3178c6', Shell: '#89e051', Rust: '#dea584' }
-
-/** 近似解析 store 中的格式化时间（M-D HH:mm 或 YYYY-M-D HH:mm），返回距现在的毫秒数 */
-function agoMs(s: string): number {
-  const spaceAt = s.indexOf(' ')
-  const datePart = spaceAt === -1 ? s : s.slice(0, spaceAt)
-  const timePart = spaceAt === -1 ? '0:0' : s.slice(spaceAt + 1)
-  const d = datePart.split('-').map(Number)
-  const t = timePart.split(':').map(Number)
-  const now = new Date()
-  const [y, mo, day] = d.length === 3 ? d : [now.getFullYear(), d[0], d[1]]
-  return now.getTime() - new Date(y, mo - 1, day, t[0] ?? 0, t[1] ?? 0).getTime()
-}
-
 export default function ReposPage({ nav }: PageProps) {
-  useStore()
   const qc = useQueryClient()
   const [toast, setToast] = useState<string | undefined>(undefined)
   const [createOpen, setCreateOpen] = useState(false)
-  const { data: remoteData } = useRepos()
+  const { data: remoteData, isLoading: reposLoading } = useRepos()
   const remoteItems = remoteData?.items ?? []
 
-  const weekCommits = commits.filter((c) => agoMs(c.date) < 7 * 86400000).length
-  const totalBranches = branches.length + remoteItems.reduce((acc, r) => acc + (r.branchCount ?? 0), 0)
-  const totalRepos = repos.length + remoteItems.filter((r) => !repos.some((m) => m.name === r.name)).length
+  const totalBranches = remoteItems.reduce((acc, r) => acc + (r.branchCount ?? 0), 0)
+  const totalCommits = remoteItems.reduce((acc, r) => acc + (r.commitCount ?? 0), 0)
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -40,9 +23,9 @@ export default function ReposPage({ nav }: PageProps) {
   }
 
   const stats = [
-    { label: '仓库总数', value: totalRepos, icon: FolderGit2 },
+    { label: '仓库总数', value: remoteItems.length, icon: FolderGit2 },
     { label: '分支总数', value: totalBranches, icon: GitBranch },
-    { label: '本周提交', value: weekCommits, icon: GitCommitHorizontal },
+    { label: '提交总数', value: totalCommits, icon: GitCommitHorizontal },
   ]
 
   return (
@@ -72,17 +55,22 @@ export default function ReposPage({ nav }: PageProps) {
         ))}
       </div>
 
-      {/* 仓库卡片网格：先展示自研真实裸库，后展示模拟仓库 */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {remoteItems.map((r) => (
-          <RemoteRepoCard key={r.id} repo={r} onOpen={() => nav.go('repo', r.name)} />
-        ))}
-        {repos
-          .filter((r) => !remoteItems.some((rem) => rem.name === r.name))
-          .map((r) => (
-            <RepoCard key={r.id} repo={r} onOpen={() => nav.go('repo', r.id)} />
+      {/* 仓库卡片网格：只展示真实裸库（⑥m 去原型混排）；QA 顺手项：补 loading/空态 */}
+      {reposLoading ? (
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-line bg-ink-850 px-4 py-12 text-sm text-txt-low">
+          <Loader2 size={15} className="animate-spin" /> 仓库加载中…
+        </div>
+      ) : remoteItems.length === 0 ? (
+        <div className="rounded-lg border border-line bg-ink-850 px-4 py-12 text-center text-sm text-txt-low">
+          暂无仓库——点右上角「新建仓库」创建第一个真实裸库
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {remoteItems.map((r) => (
+            <RemoteRepoCard key={r.id} repo={r} onOpen={() => nav.go('repo', r.name)} />
           ))}
-      </div>
+        </div>
+      )}
 
       {createOpen && (
         <CreateRepoDialog
@@ -229,8 +217,9 @@ function RemoteRepoCard({ repo, onOpen }: { repo: RemoteRepo; onOpen: () => void
       <div className="flex items-center gap-2">
         <FolderGit2 size={16} className="shrink-0 text-brand" />
         <span className="truncate font-mono text-[15px] font-semibold text-txt-hi">{repo.name}</span>
-        {repo.visibility === 'INTERNAL' && <Badge tone="neutral">内部</Badge>}
-        {repo.visibility === 'private' && (
+        {/* ⑥m QA：大小写归一（后端原样序列化大写枚举；小写 'private' 判断恒假为既有死代码） */}
+        {repo.visibility?.toUpperCase() === 'INTERNAL' && <Badge tone="neutral">内部</Badge>}
+        {repo.visibility?.toUpperCase() === 'PRIVATE' && (
           <span title="私有仓库" className="flex shrink-0">
             <Lock size={12} className="text-txt-low" />
           </span>
@@ -256,67 +245,6 @@ function RemoteRepoCard({ repo, onOpen }: { repo: RemoteRepo; onOpen: () => void
           {repo.commitCount ?? 0} 提交
         </span>
         <span className="ml-auto shrink-0 tabular-nums">更新于 {formattedDate}</span>
-      </div>
-    </button>
-  )
-}
-
-function RepoCard({ repo, onOpen }: { repo: Repo; onOpen: () => void }) {
-  const lead = userById(repo.leadId)
-  const product = repo.productId ? productById(repo.productId) : undefined
-  const comp = repo.componentId ? componentById(repo.componentId) : undefined
-  const branchCount = branches.filter((b) => b.repoId === repo.id).length
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="cursor-pointer rounded-lg border border-line bg-ink-850 p-4 text-left transition-colors hover:border-line-hi hover:bg-ink-700"
-    >
-      <div className="flex items-center gap-2">
-        <FolderGit2 size={16} className="shrink-0 text-brand" />
-        <span className="truncate font-mono text-[15px] font-semibold text-txt-hi">{repo.name}</span>
-        {repo.visibility === 'private' && (
-          <span title="私有仓库" className="flex shrink-0">
-            <Lock size={12} className="text-txt-low" />
-          </span>
-        )}
-        {product && (
-          <span className="flex shrink-0">
-            <Badge tone="brand">
-              <Package size={10} />
-              {product.name}
-            </Badge>
-          </span>
-        )}
-        {comp && (
-          <span className="flex shrink-0">
-            <Badge>{comp.name}</Badge>
-          </span>
-        )}
-        <span className="flex-1" />
-        {repo.ciEnabled && <Badge tone="ok">CI 已启用</Badge>}
-      </div>
-      <p className="mt-2 truncate text-sm text-txt-mid">{repo.description}</p>
-      <div className="mt-3.5 flex items-center gap-4 text-xs text-txt-low">
-        <span className="flex shrink-0 items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ background: langColor[repo.language] ?? '#5d6b86' }} />
-          <span className="text-txt-mid">{repo.language}</span>
-        </span>
-        <span className="flex shrink-0 items-center gap-1 tabular-nums">
-          <Star size={12} />
-          {repo.stars}
-        </span>
-        <span className="flex shrink-0 items-center gap-1 tabular-nums">
-          <GitBranch size={12} />
-          {branchCount}
-        </span>
-        {lead && (
-          <span className="flex shrink-0 items-center gap-1.5">
-            <Avatar userId={lead.id} size={18} />
-            <span className="text-txt-mid">{lead.name}</span>
-          </span>
-        )}
-        <span className="ml-auto shrink-0 tabular-nums">更新于 {repo.updatedAt}</span>
       </div>
     </button>
   )
