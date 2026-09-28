@@ -9,7 +9,7 @@ import type { EChartsCoreOption } from 'echarts/core'
 import { Download } from 'lucide-react'
 import { Avatar, Btn, Card, CardHeader, Empty, PageHeader, Spinner } from '../../components/ui'
 import {
-  useDefects, useEfficiencyReport, useGoalOverview, useMergeRequests, useProducts,
+  useDefects, useEfficiencyReport, useGoalOverview, useMergeRequests, useProducts, useProjects,
   useRepos, useSprintBurndown, useCfdReport, useSprints, useWorkItems,
   type RemoteBurndownReport, type RemoteCfdReport, type RemoteEfficiencyReport,
   type RemoteProduct, type RemoteSprint,
@@ -132,6 +132,23 @@ export default function ReportsPage({ nav }: PageProps) {
   // B2 · UT-30：Goal 宏观视角（失败显示 Empty 不报错）
   const { data: goalOverview, isLoading: goalLoading } = useGoalOverview()
 
+  // ⑥o 双轮两数（15 §6）：全产品客制化率 / 回流率——从 useProjects 汇总：
+  // Σ客制 = ΣcustomTotal；Σ已回流 = ΣpromotedTotal；Σ需求 = 按产品去重后的 productTotal 之和
+  //（QA 修正：同一产品多项目时 rate 反推会把产品总数重复计入 k 倍，productTotal 直读+按产品去重才是正确分母）
+  const { data: projectRows } = useProjects()
+  const dualTrack = useMemo(() => {
+    const rows = projectRows ?? []
+    const custom = rows.reduce((s, p) => s + (p.customTotal ?? 0), 0)
+    const promoted = rows.reduce((s, p) => s + (p.promotedTotal ?? 0), 0)
+    const perProduct = new Map<string, number>()
+    for (const p of rows) {
+      const direct = p.productTotal ?? (p.customRate > 0 ? Math.round(p.customTotal / p.customRate) : p.customTotal)
+      perProduct.set(p.productId, Math.max(perProduct.get(p.productId) ?? 0, direct))
+    }
+    const total = [...perProduct.values()].reduce((s, v) => s + v, 0)
+    return { custom, promoted, total, customRate: total > 0 ? custom / total : 0, promoteRate: custom > 0 ? promoted / custom : 0 }
+  }, [projectRows])
+
   // 绩效视图：成员 × 真实工作项（完成数/点/按期率/负载）+ 真实 MR 数（repo → product 过滤）
   const repoProduct = useMemo(() => {
     const m = new Map<string, string | undefined>()
@@ -219,6 +236,20 @@ export default function ReportsPage({ nav }: PageProps) {
           <span>平均交付周期：<strong className="text-cat-teal">{remoteEff.avgCycleTimeDays > 0 ? `${remoteEff.avgCycleTimeDays} 天` : '—'}</strong></span>
           <span>缺陷解决率：<strong className="text-ok">{Math.round(remoteEff.defectResolutionRate * 100)}%</strong> ({remoteEff.defectCount} 缺陷)</span>
           <span>已交付故事点：<strong className="text-cat-purple">{remoteEff.completedStoryPoints}</strong> / {remoteEff.totalStoryPoints}</span>
+        </div>
+      )}
+
+      {/* ⑥o 双轮两数（文字级起步，M6 图表化）：全产品客制化率 / 回流率（useProjects 汇总） */}
+      {(projectRows ?? []).length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-4 rounded-card border border-line bg-ink-800/60 px-4 py-2 text-xs text-txt-mid">
+          <span className="font-semibold text-txt-hi">双轮健康（全产品）：</span>
+          <span title={`口径：Σ各项目客制化需求 / Σ各项目全部需求 = ${dualTrack.custom}/${dualTrack.total}（Σ需求按客制化率反推，rate=0 项目按客制数计，不受上方产品过滤影响）`}>
+            客制化率：<strong className="text-cat-teal">{Math.round(dualTrack.customRate * 100)}%</strong>（Σ客制 {dualTrack.custom} / Σ需求 {dualTrack.total}）
+          </span>
+          <span title={`口径：Σ已回流客制化 / Σ客制化 = ${dualTrack.promoted}/${dualTrack.custom}`}>
+            回流率：<strong className="text-brand">{Math.round(dualTrack.promoteRate * 100)}%</strong>（Σ已回流 {dualTrack.promoted} / Σ客制 {dualTrack.custom}）
+          </span>
+          <span className="text-[11px] text-txt-low">客制化率走高=产品覆盖不足 · 回流率走低=产品在漏需求信号</span>
         </div>
       )}
 

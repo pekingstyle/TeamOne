@@ -75,19 +75,24 @@ public class WorkItemController {
         return ResponseEntity.status(HttpStatus.CREATED).body(view);
     }
 
-    /** 列表：type/status/assignee/sprintId/q 过滤 + page/size 分页（page 从 1 起） */
+    /** 列表：type/status/assignee/sprintId/q/origin/sourceProjectId 过滤 + page/size 分页（page 从 1 起） */
     @GetMapping
     public Map<String, Object> list(@RequestParam(required = false) String type,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String assignee,
             @RequestParam(required = false) String sprintId,
             @RequestParam(required = false) String q,
+            @RequestParam(required = false) String origin,
+            @RequestParam(required = false) String sourceProjectId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
         Actor.require();
         return workItems.list(type, status, assignee,
                 sprintId == null || sprintId.isBlank() ? null : refs.sprint(sprintId).getId(),
-                q, page, size);
+                q, origin,
+                sourceProjectId == null || sourceProjectId.isBlank() ? null
+                        : refs.project(sourceProjectId).getId(),
+                page, size);
     }
 
     @GetMapping("/{idOrKey}")
@@ -118,6 +123,14 @@ public class WorkItemController {
         }
         UUID workItemId = refs.workItem(idOrKey).getId();
         return Views.of(transitions.transition(workItemId, toStatus, Actor.require()));
+    }
+
+    // ==================== ⑥o 客制化回流（docs/v2/15 §3.4） ====================
+
+    /** 回流产品：客制化需求复制为同产品 origin=product 新需求 + 回写 promoted_to_id + 建 link(promoted_from)；返回新需求 */
+    @PostMapping("/{idOrKey}/promote-to-product")
+    public Map<String, Object> promoteToProduct(@PathVariable String idOrKey) {
+        return workItems.promoteToProduct(idOrKey, Actor.require());
     }
 
     // ==================== 需求评审流 ====================

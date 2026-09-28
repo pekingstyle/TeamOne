@@ -171,6 +171,12 @@ export interface Requirement {
   updatedAt: string
   /** 后端乐观锁版本（dogfooding：PRD 正文 PUT 需带 If-Match） */
   version?: number
+  /** ⑥o 双轨来源（15 §3.2）：product=产品标准（缺省）；project_custom=项目客制（需求仍挂产品） */
+  origin?: 'product' | 'project_custom'
+  /** origin=project_custom 时的来源项目 id */
+  sourceProjectId?: string
+  /** 回流目标需求 id；非空=已回流 */
+  promotedToId?: string
   acceptedAt?: string
   deliveredAt?: string
   /** Markdown 需求详细正文内容（支持富文本/表格/代码块规范） */
@@ -574,7 +580,7 @@ export interface ConflictItem {
 
 export type PageId =
   | 'dashboard' | 'reports' | 'conflicts'
-  | 'goals' | 'requirements' | 'roadmap' | 'tasks' | 'defects' | 'delivery'
+  | 'goals' | 'requirements' | 'roadmap' | 'tasks' | 'defects' | 'delivery' | 'projects'
   | 'topics' | 'im' | 'team'
   | 'repos' | 'repo' | 'review' | 'mr' | 'pipelines' | 'pipeline'
   | 'settings'

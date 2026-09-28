@@ -4,7 +4,11 @@ import cn.teamone.prd.domain.Component;
 import cn.teamone.prd.domain.Release;
 import cn.teamone.prd.domain.RoadmapItem;
 import cn.teamone.prd.domain.WorkItem;
+import cn.teamone.prd.domain.WorkItemLink;
 import cn.teamone.prd.repo.ChildCountView;
+import cn.teamone.prd.repo.ProductRepository;
+import cn.teamone.prd.repo.ProjectRepository;
+import cn.teamone.prd.repo.WorkItemLinkRepository;
 import cn.teamone.prd.repo.WorkItemRepository;
 import cn.teamone.platform.authz.PermissionService;
 import cn.teamone.platform.infra.IdempotencyService;
@@ -45,6 +49,11 @@ import java.util.UUID;
  * 条目路径（roadmap_item_id ∈ 目标条目集合，goal_id 由条目派生）与直挂目标路径
  * （goal_id 直挂、roadmap_item_id 为空）；create/update 写 roadmap_item_id 时自动
  * 派生 goal_id = 条目.goal_id，保证双路径不漂移。</p>
+ *
+ * <p>⑥o 客制化双轨（docs/v2/15）：create/update 透传 origin/sourceProjectId
+ * （origin=project_custom 时 sourceProjectId 必填且存在）；promoteToProduct 回流——
+ * 复制为同产品 origin=product 新需求 + 回写 promoted_to_id + 建 link(promoted_from)，
+ * 同事务原子完成。</p>
  */
 @Service
 public class WorkItemService {
@@ -54,6 +63,10 @@ public class WorkItemService {
     private static final Set<String> SEVERITIES = Set.of(
             WorkItem.SEVERITY_FATAL, WorkItem.SEVERITY_CRITICAL,
             WorkItem.SEVERITY_MAJOR, WorkItem.SEVERITY_MINOR);
+
+    /** 需求来源合法值（⑥o 客制化双轨，与 ck_work_item origin CHECK 字节级一致） */
+    private static final Set<String> ORIGINS = Set.of(
+            WorkItem.ORIGIN_PRODUCT, WorkItem.ORIGIN_PROJECT_CUSTOM);
 
     /** 发号类型映射：work_item.type → prd.key_sequence.type */
     private static final Map<String, String> SEQUENCE_TYPES = Map.of(
@@ -76,14 +89,16 @@ public class WorkItemService {
                              BigDecimal storyPoints, BigDecimal estimateHours,
                              LocalDate startDate, LocalDate dueDate,
                              List<String> labels, String severity, String blockedReleaseId,
-                             String requirementId) {}
+                             String requirementId,
+                             String origin, String sourceProjectId) {}
 
     /** 更新请求（null=不变更；blockedReleaseId 空串=解除阻塞） */
     public record UpdateSpec(String title, String description, String priority, String assigneeId,
                              String componentId, String sprintId, String releaseId, String roadmapItemId,
                              BigDecimal storyPoints, BigDecimal estimateHours,
                              LocalDate startDate, LocalDate dueDate,
-                             List<String> labels, String severity, String blockedReleaseId) {}
+                             List<String> labels, String severity, String blockedReleaseId,
+                             String origin, String sourceProjectId) {}
 
     private final WorkItemRepository workItems;
     private final KeySequenceService sequences;
@@ -93,11 +108,13 @@ public class WorkItemService {
     private final OutboxWriter outbox;
     private final Refs refs;
     private final EntityManager em;
+    private final WorkItemLinkRepository links;
+    private final ProjectRepository projects;
 
     public WorkItemService(WorkItemRepository workItems, KeySequenceService sequences,
                            GateService gateService, PermissionService permissions,
                            IdempotencyService idempotency, OutboxWriter outbox, Refs refs,
-                           EntityManager em) {
+                           EntityManager em, WorkItemLinkRepository links, ProjectRepository projects) {
         this.workItems = workItems;
         this.sequences = sequences;
         this.gateService = gateService;
@@ -106,6 +123,8 @@ public class WorkItemService {
         this.outbox = outbox;
         this.refs = refs;
         this.em = em;
+        this.links = links;
+        this.projects = projects;
     }
 
     // ==================== 创建 ====================
@@ -165,6 +184,8 @@ public class WorkItemService {
         wi.setDueDate(spec.dueDate());
         wi.setLabels(spec.labels() == null ? "[]" : spec.labels().toString());
         wi.setRequirementId(refs.workItemIdOrNull(spec.requirementId()));
+        // ⑥o 客制化双轨：来源透传（origin=project_custom 时 sourceProjectId 必填且存在）
+        applyOrigin(wi, spec.origin(), spec.sourceProjectId());
 
         // L1 前置：defect 专用列（severity 必填已校验）；blockedRelease 可补出 productId
         if (WorkItem.TYPE_DEFECT.equals(spec.type())) {
@@ -227,10 +248,11 @@ public class WorkItemService {
         return Views.of(refs.workItem(idOrKey));
     }
 
-    /** 列表：type/status/assignee(uuid 或 username)/sprintId/q(key 或 title 模糊)，page 从 1 起 */
+    /** 列表：type/status/assignee(uuid 或 username)/sprintId/q(key 或 title 模糊)/origin/sourceProjectId 过滤，page 从 1 起 */
     @Transactional(readOnly = true)
     public Map<String, Object> list(String type, String status, String assignee, UUID sprintId,
-                                    String q, int page, int size) {
+                                    String q, String origin, UUID sourceProjectId,
+                                    int page, int size) {
         UUID assigneeId = refs.userIdOrNull(assignee);
         int safeSize = Math.min(Math.max(size, 1), 200);
         PageRequest pageable = PageRequest.of(Math.max(page - 1, 0), safeSize,
@@ -248,6 +270,12 @@ public class WorkItemService {
             }
             if (sprintId != null) {
                 ps.add(cb.equal(root.get("sprintId"), sprintId));
+            }
+            if (origin != null && !origin.isBlank()) {
+                ps.add(cb.equal(root.get("origin"), origin));
+            }
+            if (sourceProjectId != null) {
+                ps.add(cb.equal(root.get("sourceProjectId"), sourceProjectId));
             }
             if (q != null && !q.isBlank()) {
                 String like = "%" + q.toLowerCase() + "%";
@@ -331,6 +359,10 @@ public class WorkItemService {
         if (spec.labels() != null) {
             wi.setLabels(spec.labels().toString());
         }
+        // ⑥o 客制化双轨：来源可改（origin/sourceProjectId 任一显式出现即重算；同 create 校验口径）
+        if (spec.origin() != null || spec.sourceProjectId() != null) {
+            applyOrigin(wi, spec.origin(), spec.sourceProjectId());
+        }
 
         boolean gateNeeded = false;
         UUID oldBlocked = wi.getBlockedReleaseId();
@@ -374,6 +406,81 @@ public class WorkItemService {
         return Views.of(wi);
     }
 
+    // ==================== ⑥o 客制化回流（promote-to-product，docs/v2/15 §3.4） ====================
+
+    /**
+     * 客制化需求回流产品：同产品复制一条 origin=product 新需求（title/description/
+     * storyPoints/优先级承接，status=draft 进 backlog），回写原需求 promoted_to_id，
+     * 建 link(relation=promoted_from)——同事务原子完成，返回新需求视图。
+     *
+     * <p>前置校验（违反 → 422 {@link ErrorCode#PRD_4256}）：type=requirement、
+     * origin=project_custom、promoted_to_id 为空（重复回流幂等防重）。
+     * 注：文档口径 status=todo，但 requirement 状态 CHECK（ck_work_item_type_status）
+     * 只允许 draft 起——进 backlog 语义落地为 draft（待评审受理）。</p>
+     *
+     * <p>并发护栏：{@code @Version} 乐观锁——两并发回流同一需求，后落库方对 source 的
+     * UPDATE 命中 0 行而整体回滚（含复制与建链），不会产生重复产品需求或悬空链；
+     * 败者抛乐观锁异常（与全仓异常映射现状一致）。</p>
+     */
+    @Transactional
+    public Map<String, Object> promoteToProduct(String idOrKey, UUID actorId) {
+        WorkItem source = refs.workItem(idOrKey);
+        if (!WorkItem.TYPE_REQUIREMENT.equals(source.getType())) {
+            throw new BusinessException(ErrorCode.PRD_4256, "仅 requirement 可回流产品");
+        }
+        if (!WorkItem.ORIGIN_PROJECT_CUSTOM.equals(source.getOrigin())) {
+            throw new BusinessException(ErrorCode.PRD_4256, "仅客制化需求（origin=project_custom）可回流产品");
+        }
+        if (source.getPromotedToId() != null) {
+            throw new BusinessException(ErrorCode.PRD_4256);
+        }
+        if (source.getProductId() == null) {
+            throw new BusinessException(ErrorCode.PLT_4000, "需求未挂产品，无法回流");
+        }
+        permissions.require(actorId, "product", source.getProductId(), "edit");
+
+        WorkItem target = new WorkItem();
+        target.setType(WorkItem.TYPE_REQUIREMENT);
+        target.setTitle(source.getTitle());
+        target.setDescription(source.getDescription());
+        target.setStatus(WorkItem.STATUS_REQ_DRAFT);
+        target.setPriority(source.getPriority());
+        target.setStoryPoints(source.getStoryPoints());
+        target.setReporterId(actorId);
+        target.setProductId(source.getProductId());
+        target.setLabels(source.getLabels());
+        target.setOrigin(WorkItem.ORIGIN_PRODUCT); // 回流目标恒为产品标准需求
+        target.setKey(sequences.nextKey(SEQUENCE_TYPES.get(WorkItem.TYPE_REQUIREMENT)));
+
+        // path 根：goal 优先，退化 productId（与 create 同规则；回流目标不承接条目/目标挂载）
+        UUID pathRoot = target.getGoalId() != null ? target.getGoalId() : target.getProductId();
+        target.setPath("/");
+        workItems.saveAndFlush(target); // 先以占位落库拿 id，再补真实路径（同事务一次 UPDATE）
+        target.setPath("/" + pathRoot + "/" + target.getId() + "/");
+
+        // 回写回流目标（非空=已回流，幂等防重）
+        source.setPromotedToId(target.getId());
+
+        // 回流可追溯链：from=原客制需求，to=新产品需求（V23 relation CHECK 扩值）
+        WorkItemLink link = new WorkItemLink();
+        link.setFromItemId(source.getId());
+        link.setToItemId(target.getId());
+        link.setRelation(WorkItemLink.RELATION_PROMOTED_FROM);
+        links.save(link);
+
+        // L2 广播：回流产生的新产品需求同 workitem.created（与 create 同构，附回流来源）
+        Map<String, Object> created = new LinkedHashMap<>();
+        created.put("id", target.getId());
+        created.put("key", target.getKey());
+        created.put("type", target.getType());
+        created.put("title", target.getTitle());
+        created.put("promotedFromId", source.getId());
+        created.put("reporterId", target.getReporterId());
+        outbox.append("work_item", target.getId(), "workitem.created", created, actorId);
+
+        return Views.of(target);
+    }
+
     // ==================== 内部 ====================
 
     /**
@@ -413,6 +520,47 @@ public class WorkItemService {
         if (!WorkItem.TYPE_DEFECT.equals(wi.getType())) {
             throw new BusinessException(ErrorCode.PLT_4000, message);
         }
+    }
+
+    /**
+     * 来源归属统一收口（⑥o 客制化双轨，create/update 共用）：
+     * origin 缺省 product（存量实体已有值时保持不变）；origin=project_custom 时
+     * sourceProjectId 必填且存在（否则 400）；origin=product 时忽略 sourceProjectId 置 null。
+     */
+    private void applyOrigin(WorkItem wi, String originSpec, String sourceSpec) {
+        String origin = (originSpec == null || originSpec.isBlank())
+                ? (wi.getOrigin() == null ? WorkItem.ORIGIN_PRODUCT : wi.getOrigin())
+                : originSpec;
+        if (!ORIGINS.contains(origin)) {
+            throw new BusinessException(ErrorCode.PLT_4000, "origin 非法: " + origin);
+        }
+        if (WorkItem.ORIGIN_PROJECT_CUSTOM.equals(origin)) {
+            // 未显式传 sourceProjectId 时保持既有来源（update 语义），create 时既有为 null → 400 兜底
+            String source = (sourceSpec == null || sourceSpec.isBlank())
+                    ? (wi.getSourceProjectId() == null ? null : wi.getSourceProjectId().toString())
+                    : sourceSpec;
+            wi.setSourceProjectId(resolveSourceProject(source));
+        } else {
+            wi.setSourceProjectId(null);
+        }
+        wi.setOrigin(origin);
+    }
+
+    /** 来源项目解析（uuid 且必须存在；缺省/不存在 → 400） */
+    private UUID resolveSourceProject(String sourceProjectId) {
+        if (sourceProjectId == null || sourceProjectId.isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "origin=project_custom 时 sourceProjectId 必填");
+        }
+        UUID id;
+        try {
+            id = UUID.fromString(sourceProjectId.trim());
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ErrorCode.PLT_4000, "sourceProjectId 非法: " + sourceProjectId);
+        }
+        if (!projects.existsById(id)) {
+            throw new BusinessException(ErrorCode.PLT_4000, "来源项目不存在: " + sourceProjectId);
+        }
+        return id;
     }
 
     private String requireText(String v, String message) {

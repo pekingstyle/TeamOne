@@ -2,7 +2,7 @@
 // v2.1：话题讨论并入「即时沟通」（频道/话题/私聊三类），'topics' 页面标识保留作跳转别名
 import type { ComponentType } from 'react'
 import {
-  AlertTriangle, BarChart3, CalendarRange, CircleDot, FileText, FolderGit2, GitPullRequest,
+  AlertTriangle, BarChart3, CalendarRange, CircleDot, FileText, FolderGit2, FolderKanban, GitPullRequest,
   LayoutDashboard, ListChecks, MessagesSquare, Package, Settings, Target, Users, Workflow,
 } from 'lucide-react'
 import type { PageId } from './data/types'
@@ -44,6 +44,8 @@ export const navGroups: { title: string; items: NavItem[] }[] = [
       { id: 'tasks', label: '迭代与任务', icon: ListChecks },
       { id: 'defects', label: '缺陷中心', icon: CircleDot },
       { id: 'delivery', label: '版本与发布', icon: Package },
+      // ⑥o 双轨（docs/v2/15 §5）：项目交付实例线——客制化需求记来源项目，回流通道反哺产品
+      { id: 'projects', label: '项目交付', icon: FolderKanban },
     ],
   },
   {

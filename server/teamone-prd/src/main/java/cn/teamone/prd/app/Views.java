@@ -2,6 +2,7 @@ package cn.teamone.prd.app;
 
 import cn.teamone.prd.domain.Component;
 import cn.teamone.prd.domain.Product;
+import cn.teamone.prd.domain.Project;
 import cn.teamone.prd.domain.Release;
 import cn.teamone.prd.domain.RequirementReview;
 import cn.teamone.prd.domain.RoadmapItem;
@@ -56,6 +57,9 @@ public final class Views {
         m.put("dueDate", wi.getDueDate() == null ? null : wi.getDueDate().format(DATE));
         m.put("labels", wi.getLabels());
         m.put("severity", wi.getSeverity());
+        m.put("origin", wi.getOrigin());
+        m.put("sourceProjectId", wi.getSourceProjectId());
+        m.put("promotedToId", wi.getPromotedToId());
         m.put("version", wi.getVersion());
         m.put("createdAt", wi.getCreatedAt());
         m.put("updatedAt", wi.getUpdatedAt());
@@ -104,6 +108,23 @@ public final class Views {
     }
 
     // ==================== 层级实体视图（M2-INC-1 W1：05 §2.3 层级链） ====================
+
+    /** 项目交付实例（⑥o 客制化双轨）；productName/metrics/customItems 由 ProjectService 装配 */
+    public static Map<String, Object> of(Project p) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("id", p.getId());
+        m.put("name", p.getName());
+        m.put("customerName", p.getCustomerName());
+        m.put("status", p.getStatus());
+        m.put("productId", p.getProductId());
+        m.put("managerId", p.getManagerId());
+        m.put("startDate", p.getStartDate() == null ? null : p.getStartDate().format(DATE));
+        m.put("planAcceptDate", p.getPlanAcceptDate() == null ? null : p.getPlanAcceptDate().format(DATE));
+        m.put("version", p.getVersion());
+        m.put("createdAt", p.getCreatedAt());
+        m.put("updatedAt", p.getUpdatedAt());
+        return m;
+    }
 
     /** 战略目标（roadmap_item 无业务 key 列，rollup 行不含 key 字段——见 GoalService） */
     public static Map<String, Object> of(StrategicGoal g) {

@@ -98,4 +98,18 @@ public interface WorkItemRepository
             + "FROM prd.work_item WHERE parent_id IN (:ids) AND type IN ('task','test_task','defect') "
             + "GROUP BY parent_id", nativeQuery = true)
     List<ChildCountView> childStatsByParentIds(@Param("ids") Collection<UUID> parentIds);
+
+    // ==================== ⑥o 客制化双轨：项目度量与客制化需求视图 ====================
+
+    /** 产品的全部工作项数（项目客制化率分母：产品是唯一工程账本） */
+    long countByProductId(UUID productId);
+
+    /** 项目的客制化工作项数（source_project_id ∩ origin=project_custom，客制化率分子） */
+    long countBySourceProjectIdAndOrigin(UUID sourceProjectId, String origin);
+
+    /** 项目已回流的客制化工作项数（promoted_to_id 非空，回流率分子） */
+    long countBySourceProjectIdAndOriginAndPromotedToIdIsNotNull(UUID sourceProjectId, String origin);
+
+    /** 项目的客制化需求条目（项目详情视图，创建时间倒序） */
+    List<WorkItem> findBySourceProjectIdAndOriginOrderByCreatedAtDesc(UUID sourceProjectId, String origin);
 }

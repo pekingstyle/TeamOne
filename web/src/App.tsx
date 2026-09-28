@@ -23,6 +23,7 @@ import RoadmapPage from './features/roadmap/RoadmapPage'
 import TasksPage from './features/tasks/TasksPage'
 import DefectsPage from './features/defects/DefectsPage'
 import DeliveryPage from './features/delivery/DeliveryPage'
+import ProjectsPage from './features/projects/ProjectsPage'
 import ImPage from './features/im/ImPage'
 import TeamPage from './features/team/TeamPage'
 import ConflictsPage from './features/conflicts/ConflictsPage'
@@ -515,7 +516,7 @@ function Sidebar({ page, nav }: { page: PageId; nav: Nav }) {
 
 const pageTitles: Record<PageId, string> = {
   dashboard: '工作台', reports: '统计报表', conflicts: '冲突中心',
-  goals: '战略目标', requirements: '需求管理', roadmap: '产品 RoadMap', tasks: '迭代与任务', defects: '缺陷中心', delivery: '版本与发布',
+  goals: '战略目标', requirements: '需求管理', roadmap: '产品 RoadMap', tasks: '迭代与任务', defects: '缺陷中心', delivery: '版本与发布', projects: '项目交付',
   topics: '即时沟通 · 话题', im: '即时沟通', team: '团队与权限',
   repos: '代码仓库', repo: '代码仓库', review: '代码评审', mr: '合并请求', pipelines: 'CI/CD 流水线', pipeline: '流水线详情',
   settings: '系统设置',
@@ -596,6 +597,7 @@ function App() {
     case 'tasks': content = <TasksPage nav={nav} id={id} />; break
     case 'defects': content = <DefectsPage nav={nav} id={id} />; break
     case 'delivery': content = <DeliveryPage nav={nav} id={id} />; break
+    case 'projects': content = <ProjectsPage nav={nav} id={id} />; break
     case 'topics': content = <ImPage nav={nav} id={id} />; break
     case 'im': content = <ImPage nav={nav} id={id} />; break
     case 'team': content = <TeamPage nav={nav} />; break

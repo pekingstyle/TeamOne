@@ -10,11 +10,12 @@ import java.util.UUID;
 @Table(name = "work_item_link", schema = "prd")
 public class WorkItemLink {
 
-    // ---------- relation（CHECK: 'discovered_in','relates_to','fixed_by','blocks'） ----------
+    // ---------- relation（CHECK: 'discovered_in','relates_to','fixed_by','blocks','promoted_from'） ----------
     public static final String RELATION_DISCOVERED_IN = "discovered_in"; // 发现于
     public static final String RELATION_RELATES_TO = "relates_to";       // 关联
     public static final String RELATION_FIXED_BY = "fixed_by";           // 修复
     public static final String RELATION_BLOCKS = "blocks";               // 阻塞
+    public static final String RELATION_PROMOTED_FROM = "promoted_from"; // 回流来源（to_item 由 from_item 回流而来，⑥o）
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)

@@ -2,6 +2,7 @@ package cn.teamone.prd.app;
 
 import cn.teamone.prd.domain.Component;
 import cn.teamone.prd.domain.Product;
+import cn.teamone.prd.domain.Project;
 import cn.teamone.prd.domain.Release;
 import cn.teamone.prd.domain.RoadmapItem;
 import cn.teamone.prd.domain.Sprint;
@@ -9,6 +10,7 @@ import cn.teamone.prd.domain.StrategicGoal;
 import cn.teamone.prd.domain.WorkItem;
 import cn.teamone.prd.repo.ComponentRepository;
 import cn.teamone.prd.repo.ProductRepository;
+import cn.teamone.prd.repo.ProjectRepository;
 import cn.teamone.prd.repo.ReleaseRepository;
 import cn.teamone.prd.repo.RoadmapItemRepository;
 import cn.teamone.prd.repo.SprintRepository;
@@ -37,10 +39,11 @@ public class Refs {
     private final StrategicGoalRepository goals;
     private final AppUserRepository users;
     private final RoadmapItemRepository roadmaps;
+    private final ProjectRepository projects;
 
     public Refs(WorkItemRepository workItems, ReleaseRepository releases, ProductRepository products,
                 ComponentRepository components, SprintRepository sprints, StrategicGoalRepository goals,
-                AppUserRepository users, RoadmapItemRepository roadmaps) {
+                AppUserRepository users, RoadmapItemRepository roadmaps, ProjectRepository projects) {
         this.workItems = workItems;
         this.releases = releases;
         this.products = products;
@@ -49,6 +52,7 @@ public class Refs {
         this.goals = goals;
         this.users = users;
         this.roadmaps = roadmaps;
+        this.projects = projects;
     }
 
     public WorkItem workItem(String idOrKey) {
@@ -116,6 +120,15 @@ public class Refs {
         }
         return goals.findById(UUID.fromString(id))
                 .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "目标不存在: " + id));
+    }
+
+    /** 项目（仅接受 uuid——prd.project 无业务 key 列，⑥o 建表定稿） */
+    public Project project(String id) {
+        if (!looksUuid(id)) {
+            throw new BusinessException(ErrorCode.PLT_4040, "项目不存在: " + id);
+        }
+        return projects.findById(UUID.fromString(id))
+                .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "项目不存在: " + id));
     }
 
     /** 用户 id（接受 uuid 或 username） */

@@ -4,6 +4,8 @@ import cn.teamone.prd.domain.Product;
 import cn.teamone.prd.domain.RoadmapItem;
 import cn.teamone.prd.domain.StrategicGoal;
 import cn.teamone.prd.domain.WorkItem;
+import cn.teamone.prd.repo.ProjectRepository;
+import cn.teamone.prd.repo.WorkItemLinkRepository;
 import cn.teamone.prd.repo.WorkItemRepository;
 import cn.teamone.platform.authz.PermissionService;
 import cn.teamone.platform.infra.IdempotencyService;
@@ -38,6 +40,8 @@ class WorkItemServiceDirectLinkTest {
     private OutboxWriter outbox;
     private Refs refs;
     private EntityManager em;
+    private WorkItemLinkRepository links;
+    private ProjectRepository projects;
     private WorkItemService service;
 
     private static final UUID PRODUCT_ID = UUID.randomUUID();
@@ -58,8 +62,10 @@ class WorkItemServiceDirectLinkTest {
         outbox = mock(OutboxWriter.class);
         refs = mock(Refs.class);
         em = mock(EntityManager.class);
+        links = mock(WorkItemLinkRepository.class);
+        projects = mock(ProjectRepository.class);
         service = new WorkItemService(workItems, sequences, gateService, permissions,
-                idempotency, outbox, refs, em);
+                idempotency, outbox, refs, em, links, projects);
         when(workItems.saveAndFlush(any(WorkItem.class))).thenAnswer(inv -> inv.getArgument(0));
         when(sequences.nextKey(any())).thenReturn("T-201");
         // 先建 mock 再打桩（避免在 when(...) 未完成时嵌套创建/打桩另一个 mock）
@@ -86,11 +92,11 @@ class WorkItemServiceDirectLinkTest {
         return item;
     }
 
-    /** 创建请求（挂 productId 保 path 根；goalId/roadmapItemId 按用例组合） */
+    /** 创建请求（挂 productId 保 path 根；goalId/roadmapItemId 按用例组合；origin 缺省 product） */
     private WorkItemService.CreateSpec createSpec(String goalId, String roadmapItemId) {
         return new WorkItemService.CreateSpec("task", "直连口径用例", null, null, null, null,
                 PRODUCT_ID.toString(), null, null, goalId, null, null, roadmapItemId,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null);
     }
 
     private WorkItem capturedCreate() {
@@ -192,6 +198,6 @@ class WorkItemServiceDirectLinkTest {
     /** 更新请求（null=不变更；仅按用例填 roadmapItemId） */
     private WorkItemService.UpdateSpec updateSpec(String roadmapItemId) {
         return new WorkItemService.UpdateSpec(null, null, null, null, null, null, null,
-                roadmapItemId, null, null, null, null, null, null, null);
+                roadmapItemId, null, null, null, null, null, null, null, null, null);
     }
 }

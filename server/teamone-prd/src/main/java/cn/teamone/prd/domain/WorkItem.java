@@ -67,6 +67,10 @@ public class WorkItem {
     public static final String SEVERITY_MAJOR = "一般";
     public static final String SEVERITY_MINOR = "轻微";
 
+    // ---------- origin（CHECK: origin IN ('product','project_custom')，⑥o 客制化双轨） ----------
+    public static final String ORIGIN_PRODUCT = "product";           // 产品标准需求
+    public static final String ORIGIN_PROJECT_CUSTOM = "project_custom"; // 项目客制需求
+
     // ---------- R-9 发布一致性：类型感知「完结集」公共口径 ----------
     // 与 insight EfficiencyReportService.isDone 字节级同源（跨域不可编译依赖，ArchUnit R3/R6，
     // 双侧以常量对齐 + 注释互指维持一致；改动此处必须同步 insight isDone，反之亦然）。
@@ -191,6 +195,18 @@ public class WorkItem {
     @Column(name = "requirement_id")
     private UUID requirementId;
 
+    /** 需求来源：产品标准/项目客制（V23 加列，缺省 product——存量零迁移） */
+    @Column(nullable = false, columnDefinition = "varchar(16)")
+    private String origin = ORIGIN_PRODUCT;
+
+    /** origin=project_custom 时的来源项目（prd.project；需求仍挂产品，只记来源） */
+    @Column(name = "source_project_id")
+    private UUID sourceProjectId;
+
+    /** 回流目标需求 id；非空=已回流（幂等防重，⑥o） */
+    @Column(name = "promoted_to_id")
+    private UUID promotedToId;
+
     @Version
     @Column(nullable = false)
     private int version;
@@ -256,6 +272,12 @@ public class WorkItem {
     public void setFixedMrId(UUID v) { this.fixedMrId = v; }
     public UUID getRequirementId() { return requirementId; }
     public void setRequirementId(UUID v) { this.requirementId = v; }
+    public String getOrigin() { return origin; }
+    public void setOrigin(String v) { this.origin = v; }
+    public UUID getSourceProjectId() { return sourceProjectId; }
+    public void setSourceProjectId(UUID v) { this.sourceProjectId = v; }
+    public UUID getPromotedToId() { return promotedToId; }
+    public void setPromotedToId(UUID v) { this.promotedToId = v; }
     public int getVersion() { return version; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

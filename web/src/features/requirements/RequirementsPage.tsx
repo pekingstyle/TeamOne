@@ -5,13 +5,13 @@
 //   * 评审记录：GET /work-items/{key}/review-rounds 按轮次分组（round/评审人/结果/意见/时间/结论），无 store 兜底；
 //   * 纪要：platform.file 两步制上传（POST/PUT /review-rounds/{round}/minutes），查看走既有下载通道。
 import { Fragment, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Check, ChevronDown, ChevronRight, Eye, FileCode, FileText, Hash, Paperclip, Plus, Upload, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, ChevronRight, Eye, FileCode, FileText, Hash, Paperclip, Plus, RefreshCcw, Upload, X } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { PageProps } from '../../nav'
 import type { ReqStatus, Requirement } from '../../data/types'
 import {
   filesApi, parseFieldError, remoteToRequirement, requirementsApi,
-  useConversations, useGoals, useProducts, useRequirementReviewRounds, useRequirementReviews,
+  useConversations, useGoals, useProducts, useProjects, useRequirementReviewRounds, useRequirementReviews,
   useRequirements, useReleases, useRoadmapItems, useSprints, useWorkItems, workItemsApi,
 } from '../../api/queries'
 import type { RemoteRequirementRound } from '../../api/queries'
@@ -37,6 +37,8 @@ export default function RequirementsPage({ nav, id }: PageProps) {
   const [showNew, setShowNew] = useState(false)
   const [fStatus, setFStatus] = useState<'all' | ReqStatus>('all')
   const [fProduct, setFProduct] = useState<'all' | string>('all')
+  // ⑥o 双轨：需求来源筛选（全部 / 产品标准 / 项目客制）
+  const [fOrigin, setFOrigin] = useState<'all' | 'product' | 'project_custom'>('all')
   const [dragOverCol, setDragOverCol] = useState<ReqStatus | undefined>()
 
   // dogfooding 切换：需求列表仅真实 API（GET /work-items?type=requirement）；动作后的状态补丁在本页暂存，
@@ -93,11 +95,16 @@ export default function RequirementsPage({ nav, id }: PageProps) {
     [allRequirements],
   )
 
+  // ⑥o 双轨：来源项目名解析（客制化 Pill 的 title 与回流提示用）
+  const { data: projectRows } = useProjects()
+  const projectName = (pid?: string) => (pid ? projectRows?.find((x) => x.id === pid)?.name : undefined)
+
   const list = useMemo(() => allRequirements
-    .filter((r) => (fStatus === 'all' || r.status === fStatus) && (fProduct === 'all' || r.productId === fProduct))
+    .filter((r) => (fStatus === 'all' || r.status === fStatus) && (fProduct === 'all' || r.productId === fProduct)
+      && (fOrigin === 'all' || (r.origin ?? 'product') === fOrigin))
     .slice()
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-  [allRequirements, fStatus, fProduct])
+    [allRequirements, fStatus, fProduct, fOrigin])
 
   // P2-4：行展开「最近驳回意见」
   const [expandedId, setExpandedId] = useState<string | undefined>()
@@ -134,6 +141,14 @@ export default function RequirementsPage({ nav, id }: PageProps) {
           <option value="all">全部产品</option>
           {productOptions.map((pid) => <option key={pid} value={pid}>{productLabel.get(pid) ?? pid}</option>)}
         </select>
+        {/* ⑥o 双轨：来源筛选（产品标准 / 项目客制） */}
+        <select value={fOrigin} onChange={(e) => setFOrigin(e.target.value as 'all' | 'product' | 'project_custom')}
+          title="需求来源：产品标准 / 项目客制（悬停客制化徽标可看来源项目）"
+          className="rounded-input border border-line bg-card px-2 py-1 text-xs text-txt-mid">
+          <option value="all">全部来源</option>
+          <option value="product">产品</option>
+          <option value="project_custom">客制化</option>
+        </select>
         <div className="flex items-center rounded-full border border-line bg-card p-1">
           {([['list', '列表'], ['board', '看板']] as const).map(([k, label]) => (
             <button key={k} type="button" onClick={() => setView(k)}
@@ -147,7 +162,7 @@ export default function RequirementsPage({ nav, id }: PageProps) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line text-left text-xs text-txt-low">
-                {['', 'Key', '标题', '状态', '优先级', '需求负责人', '交付版本', '战略目标', '拆解任务', '更新'].map((h, i) => <th key={i} className="px-3 py-2.5 font-medium">{h}</th>)}
+                {['', 'Key', '标题', '状态', '来源', '优先级', '需求负责人', '交付版本', '战略目标', '拆解任务', '更新'].map((h, i) => <th key={i} className="px-3 py-2.5 font-medium">{h}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -178,6 +193,19 @@ export default function RequirementsPage({ nav, id }: PageProps) {
                         </div>
                       </td>
                       <td className="px-3 py-2.5"><Pill tone={statusTone[r.status]}>{statusText[r.status]}</Pill></td>
+                      {/* ⑥o 来源列：产品=neutral；客制化=teal（title 带来源项目名）；已回流加 ok 徽标 */}
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-1">
+                          {r.origin === 'project_custom' ? (
+                            <span title={`来源项目：${projectName(r.sourceProjectId) ?? r.sourceProjectId ?? '—'}`}>
+                              <Pill tone="teal">客制化</Pill>
+                            </span>
+                          ) : (
+                            <Pill tone="neutral">产品</Pill>
+                          )}
+                          {r.promotedToId && <Pill tone="ok">已回流</Pill>}
+                        </div>
+                      </td>
                       <td className="px-3 py-2.5"><PriorityBadge p={r.priority} /></td>
                       <td className="px-3 py-2.5"><div className="flex items-center gap-1.5"><Avatar userId={r.ownerId} size={20} /><span className="text-xs text-txt-mid">{nameOf(r.ownerId)}</span></div></td>
                       <td className="px-3 py-2.5 font-mono text-xs text-cat-teal">{r.releaseId ? (relRows?.find((x) => x.id === r.releaseId)?.name ?? '—') : '—'}</td>
@@ -187,7 +215,7 @@ export default function RequirementsPage({ nav, id }: PageProps) {
                     </tr>
                     {expanded && (
                       <tr className="border-b border-line/60 last:border-0">
-                        <td colSpan={10} className="bg-ink-800/40 px-6 py-3">
+                        <td colSpan={11} className="bg-ink-800/40 px-6 py-3">
                           <RejectedReviewBlock r={r} />
                         </td>
                       </tr>
@@ -258,6 +286,12 @@ export default function RequirementsPage({ nav, id }: PageProps) {
                         <span className="flex-1" />
                         {r.docContent && (
                           <span title="包含详细 PRD 文档" className="rounded bg-brand/10 px-1 py-0.2 text-[9px] font-semibold text-brand">PRD</span>
+                        )}
+                        {r.origin === 'project_custom' && (
+                          <span title={`来源项目：${projectName(r.sourceProjectId) ?? r.sourceProjectId ?? '—'}`} className="rounded bg-cat-teal/10 px-1 py-0.2 text-[9px] font-semibold text-cat-teal">客制</span>
+                        )}
+                        {r.promotedToId && (
+                          <span title="已回流为产品需求" className="rounded bg-ok/10 px-1 py-0.2 text-[9px] font-semibold text-ok">已回流</span>
                         )}
                         {r.docFileName && (
                           <span title={`附件文档：${r.docFileName}`} className="rounded bg-cat-teal/10 px-1 py-0.2 text-[9px] font-semibold text-cat-teal">文档</span>
@@ -399,6 +433,27 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
     }
   }
 
+  // —— ⑥o 双轨：客制化需求回流产品（POST /{idOrKey}/promote-to-product）——
+  // 成功后失效需求/项目/工作项查询（列表徽标与项目度量自然刷新）；422（重复回流 T1-PRD-4256）展示后端 message
+  const [promoting, setPromoting] = useState(false)
+  const [promoteErr, setPromoteErr] = useState('')
+  const { data: projectRows } = useProjects()
+  const srcProjectName = rq.sourceProjectId ? projectRows?.find((x) => x.id === rq.sourceProjectId)?.name : undefined
+  const promoteToProduct = async () => {
+    setPromoting(true)
+    setPromoteErr('')
+    try {
+      await workItemsApi.promoteToProduct(rq.key)
+      await invalidateFlow()
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      await queryClient.invalidateQueries({ queryKey: ['work-items'] })
+    } catch (e) {
+      setPromoteErr(e instanceof Error ? e.message : '回流失败')
+    } finally {
+      setPromoting(false)
+    }
+  }
+
   // 拆解任务/关联链路：全部真实数据源（dogfooding 切换：store 数组与 topicById 兜底移除）
   const tasksQ = useWorkItems('task')
   const linked = useMemo(() => (tasksQ.data ?? []).filter((t) => t.requirementId === rq.id), [tasksQ.data, rq.id])
@@ -456,6 +511,10 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs font-bold text-cat-purple">{rq.key}</span>
               <Pill tone={statusTone[rq.status]}>{statusText[rq.status]}</Pill>
+              {rq.origin === 'project_custom' && (
+                <span title={`来源项目：${srcProjectName ?? rq.sourceProjectId ?? '—'}`}><Pill tone="teal">客制化</Pill></span>
+              )}
+              {rq.promotedToId && <Pill tone="ok">已回流</Pill>}
               <PriorityBadge p={rq.priority} />
             </div>
             <h2 className="mt-1.5 text-base font-bold leading-6 text-txt-hi">{rq.title}</h2>
@@ -544,6 +603,26 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
           <div>粗估 {rq.estimatePoints ?? '—'} 点</div>
           <div>创建 {rq.createdAt}</div>
         </div>
+
+        {/* ⑥o 来源与回流：客制化需求（未回流）可「回流产品」复制为产品需求进 backlog */}
+        {rq.origin === 'project_custom' && (
+          <div className="mt-3 rounded-card border border-line bg-canvas p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-txt-hi">来源与回流</span>
+              {rq.promotedToId
+                ? <Pill tone="ok">已回流</Pill>
+                : (
+                  <Btn variant="primary" disabled={promoting} onClick={() => void promoteToProduct()}>
+                    <RefreshCcw size={12} /> {promoting ? '回流中…' : '回流产品'}
+                  </Btn>
+                )}
+            </div>
+            <div className="mt-1.5 text-[11px] leading-4 text-txt-low">
+              项目客制需求{srcProjectName ? ` · 来源项目「${srcProjectName}」` : ''}。回流后将复制为产品需求进入 backlog 评审（通用性裁决），本条标记「已回流」。
+            </div>
+            {promoteErr && <div className="mt-1.5 rounded bg-bad-bg px-2.5 py-1.5 text-[11px] text-bad-deep">{promoteErr}</div>}
+          </div>
+        )}
 
         {/* 关联链路：目标 → RoadMap → 版本 → 迭代 */}
         <div className="mt-4">
@@ -886,6 +965,10 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const { data: productRows } = useProducts()
   const [goalId, setGoalId] = useState('')
   const [productId, setProductId] = useState('')
+  // ⑥o 双轨（QA MUST-FIX）：来源=客制化时必选来源项目，需求仍挂产品账本
+  const { data: projectRows } = useProjects()
+  const [origin, setOrigin] = useState<'product' | 'project_custom'>('product')
+  const [sourceProjectId, setSourceProjectId] = useState('')
   const [points, setPoints] = useState('5')
   const [busy, setBusy] = useState(false)
   const [fieldErr, setFieldErr] = useState<Record<string, string>>({})
@@ -921,6 +1004,8 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
     setErr('')
     if (!title.trim()) { setFieldErr({ title: '标题必填' }); return }
     if (!productId && !goalId) { setErr('请选择产品或关联目标（二者必选其一，作为需求归属）'); return }
+    if (origin === 'project_custom' && !sourceProjectId) { setErr('客制化需求须选择来源项目'); return }
+    if (origin === 'project_custom' && !productId) { setErr('客制化需求必须挂产品账本（客制化只记来源，不改变归属）'); return }
     setBusy(true)
     try {
       // PRD 正文并入 description（服务端需求无独立正文列）；评审人在抽屉「提交评审」时多选
@@ -935,6 +1020,8 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
         productId: productId || undefined,
         goalId: goalId || undefined,
         storyPoints: Number(points) || undefined,
+        origin,
+        sourceProjectId: origin === 'project_custom' && sourceProjectId ? sourceProjectId : undefined,
       })
       await queryClient.invalidateQueries({ queryKey: ['requirements'] })
       onDone()
@@ -1023,6 +1110,26 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
                   {(goalRows ?? []).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                 </select>
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-txt-mid">来源</label>
+                <select value={origin} onChange={(e) => setOrigin(e.target.value as 'product' | 'project_custom')} className={inputCls}>
+                  <option value="product">产品（标准需求）</option>
+                  <option value="project_custom">客制化（项目交付）</option>
+                </select>
+              </div>
+              {origin === 'project_custom' && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-txt-mid">来源项目</label>
+                  <select value={sourceProjectId} onChange={(e) => setSourceProjectId(e.target.value)} className={inputCls}>
+                    <option value="">选择项目…</option>
+                    {(projectRows ?? []).filter((x) => x.status !== 'closed').map((x) => (
+                      <option key={x.id} value={x.id}>{x.name}{x.customerName ? ` · ${x.customerName}` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div>

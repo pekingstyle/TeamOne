@@ -42,6 +42,12 @@ export interface RemoteWorkItem {
   /** 列表投影：type=requirement 行的拆解任务统计（children 按 parent_id，type∈task/test_task/defect）；无子行 0/0 */
   taskCount?: number
   taskDoneCount?: number
+  /** 双轨来源（15 §3.2）：product=产品标准需求（缺省）；project_custom=项目客制（需求仍挂产品） */
+  origin?: 'product' | 'project_custom'
+  /** origin=project_custom 时的来源项目 id（只记来源，不改变产品归属） */
+  sourceProjectId?: string
+  /** 回流目标需求 id；非空=已回流（幂等防重，重复回流 422 T1-PRD-4256） */
+  promotedToId?: string
   createdAt: string
   updatedAt: string
   path: string
@@ -208,15 +214,24 @@ export const workItemsApi = {
       },
     })
   },
+  /** POST /work-items/{idOrKey}/promote-to-product（⑥o 双轨回流，15 §4）：客制化需求复制为产品需求
+   *  （origin=product、status=draft 进 backlog——requirement 状态机无 todo）+ 回写 promoted_to_id + 建 link(promoted_from)。
+   *  仅 origin=project_custom 且未回流可发起；重复回流 422 T1-PRD-4256（读 err.message 展示）。 */
+  promoteToProduct(idOrKey: string): Promise<RemoteWorkItem> {
+    return api<RemoteWorkItem>(`/api/v1/work-items/${encodeURIComponent(idOrKey)}/promote-to-product`, { method: 'POST' })
+  },
 }
 
-/** GET /work-items 全类型工作项清单（报表/跨迭代聚合；dogfooding 切换：ReportsPage/TasksPage 真实数据源） */
-export function useWorkItems(type?: string) {
+/** GET /work-items 全类型工作项清单（报表/跨迭代聚合；dogfooding 切换：ReportsPage/TasksPage 真实数据源）。
+ *  双轨批（15 §4）：追加 origin/sourceProjectId 可选过滤（客制化需求按来源/项目过滤），缺省不过滤不影响既有调用。 */
+export function useWorkItems(type?: string, filters?: { origin?: string; sourceProjectId?: string }) {
   return useQuery({
-    queryKey: ['work-items', 'all', type ?? 'all'],
+    queryKey: ['work-items', 'all', type ?? 'all', filters?.origin ?? 'all', filters?.sourceProjectId ?? 'all'],
     queryFn: () => {
       const p = new URLSearchParams({ page: '1', size: '200' })
       if (type) p.set('type', type)
+      if (filters?.origin) p.set('origin', filters.origin)
+      if (filters?.sourceProjectId) p.set('sourceProjectId', filters.sourceProjectId)
       return api<PagePayload<RemoteSprintWorkItem>>(`/api/v1/work-items?${p.toString()}`).then((r) => r.items)
     },
   })
@@ -2243,6 +2258,105 @@ export function useProducts() {
   })
 }
 
+// ---------------- 项目交付（⑥o 双轨 · docs/v2/15：客制化需求挂产品、记来源项目；回流通道 promote） ----------------
+
+/** GET /api/v1/projects 条目（15 §4 契约；rate 为 0~1 小数，分子分母口径见字段注释） */
+export interface RemoteProject {
+  id: string
+  /** 项目名（唯一，重复创建 422 T1-PRD-4257） */
+  name: string
+  customerName?: string
+  /** delivering=交付中 / accepted=已验收 / closed=已关闭 */
+  status: 'delivering' | 'accepted' | 'closed'
+  productId: string
+  productName?: string
+  managerId?: string
+  startDate?: string
+  planAcceptDate?: string
+  /** 客制化需求数（origin=project_custom ∧ sourceProjectId=本项目） */
+  customTotal: number
+  /** 已回流数（客制化中 promoted_to_id 非空） */
+  promotedTotal: number
+  /** ⑥n 后补：产品全部工作项数（度量分母直读，消除前端反推） */
+  productTotal?: number
+  /** 客制化率 = customTotal / productTotal（0~1；口径=客制占产品账本比例） */
+  customRate: number
+  /** 回流率 = promotedTotal / customTotal（0~1） */
+  promoteRate: number
+  /** 乐观锁版本（PUT If-Match 可选携带） */
+  version?: number
+}
+
+/** GET /api/v1/projects/{id} 详情内嵌条目：该项目的客制化需求视图（15 §4 契约） */
+export interface RemoteProjectItem {
+  id: string
+  key: string
+  title: string
+  status: string
+  origin: 'product' | 'project_custom'
+  /** 非空=已回流（回流目标需求 id） */
+  promotedToId?: string
+}
+
+/** 项目详情：项目字段（含度量）+ 客制化需求条目 */
+export interface RemoteProjectDetail extends RemoteProject {
+  /** 后端契约字段名 customItems（列表端点无此字段） */
+  customItems: RemoteProjectItem[]
+}
+
+/** 项目列表（status 可选过滤 delivering/accepted/closed；15 §4 GET /api/v1/projects） */
+export function useProjects(status?: string) {
+  return useQuery({
+    queryKey: ['projects', status ?? 'all'],
+    queryFn: () => {
+      const p = new URLSearchParams()
+      if (status) p.set('status', status)
+      const qs = p.toString()
+      return api<RemoteProject[]>(`/api/v1/projects${qs ? `?${qs}` : ''}`)
+    },
+  })
+}
+
+/** 项目详情（含客制化需求条目与度量汇总） */
+export function useProject(id: string | undefined) {
+  return useQuery({
+    queryKey: ['projects', 'detail', id],
+    enabled: !!id,
+    queryFn: () => api<RemoteProjectDetail>(`/api/v1/projects/${encodeURIComponent(id!)}`),
+  })
+}
+
+/** 项目写操作客户端（work-item:manage 级；PUT 支持部分字段 + If-Match 乐观锁可选，409=版本冲突） */
+export const projectsApi = {
+  /** POST /api/v1/projects（name 唯一，重复 422 T1-PRD-4257） */
+  create(input: {
+    name: string
+    customerName?: string
+    productId: string
+    status?: string
+    managerId?: string
+    startDate?: string
+    planAcceptDate?: string
+  }): Promise<RemoteProject> {
+    return api<RemoteProject>('/api/v1/projects', { method: 'POST', body: input })
+  },
+  /** PUT /api/v1/projects/{id}（改状态/客户/经理/日期；If-Match 可选） */
+  update(id: string, patch: {
+    name?: string
+    customerName?: string
+    status?: string
+    managerId?: string
+    startDate?: string
+    planAcceptDate?: string
+  }, version?: number): Promise<RemoteProject> {
+    return api<RemoteProject>(`/api/v1/projects/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: patch,
+      headers: version != null ? { 'If-Match': String(version) } : undefined,
+    })
+  },
+}
+
 // ---------------- 需求评审流真实 API（R-6/D2，B4 批） ----------------
 
 /** 需求列表（GET /work-items?type=requirement）：需求页真实数据源（store 仅原型兜底） */
@@ -2283,6 +2397,10 @@ export function remoteToRequirement(raw: RemoteWorkItem): import('../data/types'
     goalId: t.goalId,
     sprintId: t.sprintId,
     releaseId: t.releaseId,
+    // ⑥o 双轨：来源/回流投影（缺省 product 零迁移，旧数据安全）
+    origin: raw.origin,
+    sourceProjectId: raw.sourceProjectId,
+    promotedToId: raw.promotedToId,
     version: raw.version,
     createdAt: fmtIso(raw.createdAt),
     updatedAt: fmtIso(raw.updatedAt),
@@ -2291,7 +2409,8 @@ export function remoteToRequirement(raw: RemoteWorkItem): import('../data/types'
 
 /** 需求评审流客户端（创建/提交评审/逐人评审） */
 export const requirementsApi = {
-  /** POST /work-items（type=requirement；productId 或 goalId 必填其一作 path 根） */
+  /** POST /work-items（type=requirement；productId 或 goalId 必填其一作 path 根；
+   *  ⑥o 双轨：origin=project_custom 时 sourceProjectId 必填（客制化需求记来源项目，仍挂产品账本）） */
   create(input: {
     title: string
     description?: string
@@ -2299,6 +2418,8 @@ export const requirementsApi = {
     productId?: string
     goalId?: string
     storyPoints?: number
+    origin?: 'product' | 'project_custom'
+    sourceProjectId?: string
   }): Promise<RemoteWorkItem> {
     return api<RemoteWorkItem>('/api/v1/work-items', {
       method: 'POST',
