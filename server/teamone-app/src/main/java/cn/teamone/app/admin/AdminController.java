@@ -83,6 +83,8 @@ public class AdminController {
             row.put("username", u.getUsername());
             row.put("displayName", u.getDisplayName());
             row.put("platformRole", u.getPlatformRole().name());
+            // ⑥n QA 顺手项：DISABLED 用户在矩阵中可辨识（判链仍如实输出，仅展示标记）
+            row.put("status", u.getStatus().name());
             row.put("memberships", memberships);
             rows.add(row);
         }

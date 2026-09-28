@@ -874,6 +874,8 @@ export interface RemoteRepo {
   branchCount?: number
   commitCount?: number
   stars?: number
+  /** ⑥n：最近活动时间（全部分支 tip 提交时间最大值；git 统计失败时缺席） */
+  lastCommitAt?: string
 }
 
 export interface RemoteBranch {
@@ -2881,6 +2883,8 @@ export interface PermMatrixUser {
   username: string
   displayName: string
   platformRole: 'OWNER' | 'ADMIN' | 'MEMBER'
+  /** ⑥n：账号状态（DISABLED 行前端加「停用」徽标） */
+  status?: 'ACTIVE' | 'DISABLED'
   memberships: Record<string, PermMatrixCell>
 }
 
@@ -2904,5 +2908,24 @@ export function usePermMatrix(enabled = true) {
     queryFn: () => api<PermMatrix>('/api/v1/admin/permission-matrix'),
     staleTime: 30_000,
     enabled,
+  })
+}
+
+// ---------------- 部门拓扑（⑥n 真实化：GET /api/v1/departments，仅需登录态） ----------------
+
+/** 部门条目：memberIds 由 app_user.department_id 反查（服务端聚合） */
+export interface RemoteDepartment {
+  id: string
+  name: string
+  parentId?: string | null
+  leadUserId?: string | null
+  memberIds: string[]
+}
+
+export function useDepartments() {
+  return useQuery({
+    queryKey: ['departments'],
+    queryFn: () => api<RemoteDepartment[]>('/api/v1/departments'),
+    staleTime: 60_000,
   })
 }

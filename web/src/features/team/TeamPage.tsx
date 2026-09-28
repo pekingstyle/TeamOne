@@ -1,9 +1,7 @@
 import React, { useState } from 'react'
-import type { Department } from '../../data/types'
 import {
-  componentById, departments, goalById,
-  productById, products,
-  useStore, userById, fmt,
+  products,
+  useStore, fmt,
 } from '../../data/store'
 import { Avatar, Btn, Card, CardHeader, PageHeader, Pill } from '../../components/ui'
 import type { Nav, PageProps } from '../../nav'
@@ -13,9 +11,17 @@ import {
   tokensApi,
   useAdminUsers,
   useAuditLogs,
+  useComponents,
+  useDepartments,
+  useGoals,
   useMyTokens,
   usePermMatrix,
+  useProducts,
   type PermMatrixCell,
+  type RemoteComponent,
+  type RemoteDepartment,
+  type RemoteGoal,
+  type RemoteProduct,
   type RemoteUserSummary,
   type RemoteValidationReport,
 } from '../../api/queries'
@@ -61,36 +67,49 @@ const PLATFORM_ROLE_CLS: Record<'OWNER' | 'ADMIN' | 'MEMBER', string> = {
 }
 const REPO_VISIBILITY_TEXT: Record<string, string> = { PUBLIC: '公开', INTERNAL: '内部', PRIVATE: '私有' }
 
-function DeptCard({ dept, nav }: { dept: Department; nav: Nav }) {
-  const lead = userById(dept.leadId)
+/** 部门拓扑卡片（⑥n 真实化：真实部门 + memberIds 头像 + 按负责人归组的产品/组件/目标） */
+function RemoteDeptCard({ dept, products, components, goals, nav }: {
+  dept: RemoteDepartment
+  products: RemoteProduct[]
+  components: RemoteComponent[]
+  goals: RemoteGoal[]
+  nav: Nav
+}) {
+  // 归组口径：产品/组件按「负责人所属部门」推导（真实 schema 的 product/component 无 department_id 列）；
+  // 目标经部门内产品反查（product.goalId）
+  const memberSet = new Set(dept.memberIds)
+  const deptProducts = products.filter((p) => p.ownerId && memberSet.has(p.ownerId))
+  const deptComponents = components.filter((c) => c.ownerId && memberSet.has(c.ownerId))
+  const deptGoals = goals.filter((g) => deptProducts.some((p) => p.goalId === g.id))
   return (
     <Card>
       <CardHeader
         title={<span className="flex items-center gap-2">{dept.name}<Pill tone="neutral">{dept.memberIds.length} 人</Pill></span>}
-        extra={lead && <span className="flex items-center gap-1.5 text-xs text-txt-mid"><Avatar userId={lead.id} size={20} />负责人 {lead.name}</span>}
+        extra={dept.leadUserId && <span className="flex items-center gap-1.5 text-xs text-txt-mid"><Avatar userId={dept.leadUserId} size={20} />负责人</span>}
       />
       <div className="space-y-3 px-4 py-3">
         <div className="flex">
+          {dept.memberIds.length === 0 && <span className="text-[11px] text-txt-low">暂无成员</span>}
           {dept.memberIds.map((id, i) => (
             <span key={id} className={i === 0 ? '' : '-ml-1.5'}><Avatar userId={id} size={24} /></span>
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="w-10 shrink-0 text-[11px] font-semibold text-txt-low">产品</span>
-          {dept.productIds.length === 0 && <span className="text-[11px] text-txt-low">—</span>}
-          {dept.productIds.map((pid) => <span key={pid} className={prodBadge}>{productById(pid)?.name ?? pid}</span>)}
+          {deptProducts.length === 0 && <span className="text-[11px] text-txt-low">—</span>}
+          {deptProducts.map((p) => <span key={p.id} className={prodBadge}>{p.name}</span>)}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="w-10 shrink-0 text-[11px] font-semibold text-txt-low">组件</span>
-          {dept.componentIds.length === 0 && <span className="text-[11px] text-txt-low">—</span>}
-          {dept.componentIds.map((cid) => <span key={cid} className={compBadge}>{componentById(cid)?.name ?? cid}</span>)}
+          {deptComponents.length === 0 && <span className="text-[11px] text-txt-low">—</span>}
+          {deptComponents.map((c) => <span key={c.id} className={compBadge}>{c.name}</span>)}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="w-10 shrink-0 text-[11px] font-semibold text-txt-low">目标</span>
-          {dept.goalIds.length === 0 && <span className="text-[11px] text-txt-low">—</span>}
-          {dept.goalIds.map((gid) => (
-            <button key={gid} type="button" onClick={() => nav.go('goals', gid)} className={goalBadge} title="查看战略目标">
-              {goalById(gid)?.key ?? gid} {goalById(gid)?.name}
+          {deptGoals.length === 0 && <span className="text-[11px] text-txt-low">—</span>}
+          {deptGoals.map((g) => (
+            <button key={g.id} type="button" onClick={() => nav.go('goals', g.id)} className={goalBadge} title="查看战略目标">
+              {g.name}
             </button>
           ))}
         </div>
@@ -300,8 +319,14 @@ export default function TeamPage({ nav }: PageProps) {
     })
   }
 
-  const roots = departments.filter((d) => !d.parentId)
-  const childrenOf = (pid: string) => departments.filter((d) => d.parentId === pid)
+  // ⑥n 部门拓扑真实化：真实部门树 + 真实产品/组件/目标（按负责人归组）
+  const { data: deptRows, isLoading: deptsLoading } = useDepartments()
+  const { data: productRows } = useProducts()
+  const { data: componentRows } = useComponents()
+  const { data: goalRows } = useGoals()
+  const realDepts = deptRows ?? []
+  const deptRoots = realDepts.filter((d) => !d.parentId)
+  const deptChildrenOf = (pid: string) => realDepts.filter((d) => d.parentId === pid)
 
   return (
     <div>
@@ -873,17 +898,30 @@ export default function TeamPage({ nav }: PageProps) {
       )}
 
       {/* ============================================================ */}
-      {/* TAB 5: 部门架构拓扑 (原视图保留) */}
+      {/* TAB 5: 部门架构拓扑（⑥n 真实化：真实部门/成员/产品/组件/目标） */}
       {/* ============================================================ */}
       {activeTab === 'departments' && (
-        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-          {roots.map((d) => (
-            <div key={d.id} className="space-y-3">
-              <DeptCard dept={d} nav={nav} />
-              {childrenOf(d.id).map((c) => <DeptCard key={c.id} dept={c} nav={nav} />)}
+        deptsLoading ? (
+          <div className="px-4 py-10 text-center text-sm text-txt-low">部门加载中…</div>
+        ) : realDepts.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-txt-low">暂无部门</div>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-xs text-txt-low">
+              归组口径：成员为真实部门归属（app_user.department_id）；产品/组件按「负责人所属部门」推导；目标经部门内产品反查
             </div>
-          ))}
-        </div>
+            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+              {deptRoots.map((d) => (
+                <div key={d.id} className="space-y-3">
+                  <RemoteDeptCard dept={d} products={productRows ?? []} components={componentRows ?? []} goals={goalRows ?? []} nav={nav} />
+                  {deptChildrenOf(d.id).map((c) => (
+                    <RemoteDeptCard key={c.id} dept={c} products={productRows ?? []} components={componentRows ?? []} goals={goalRows ?? []} nav={nav} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )
       )}
 
       {/* ============================================================ */}
@@ -931,10 +969,11 @@ export default function TeamPage({ nav }: PageProps) {
                   {matrixData.users.map((u) => (
                     <tr key={u.id} className="hover:bg-ink-700">
                       <td className="sticky left-0 z-10 bg-ink-850 px-4 py-2">
-                        <span className="flex items-center gap-2">
+                        <span className={`flex items-center gap-2 ${u.status === 'DISABLED' ? 'opacity-50' : ''}`}>
                           <Avatar userId={u.id} size={22} />
                           <span className="font-medium text-txt-hi">{u.displayName}</span>
                           <span className="text-xs text-txt-low">@{u.username}</span>
+                          {u.status === 'DISABLED' && <Pill tone="warn">停用</Pill>}
                         </span>
                       </td>
                       <td className="px-3 py-2 text-center">

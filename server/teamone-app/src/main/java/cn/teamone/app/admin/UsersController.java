@@ -1,7 +1,9 @@
 package cn.teamone.app.admin;
 
 import cn.teamone.platform.domain.AppUser;
+import cn.teamone.platform.domain.Department;
 import cn.teamone.platform.repo.AppUserRepository;
+import cn.teamone.platform.repo.DepartmentRepository;
 import cn.teamone.shared.auth.RequirePerm;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,9 +20,11 @@ import java.util.UUID;
 public class UsersController {
 
     private final AppUserRepository users;
+    private final DepartmentRepository departments;
 
-    public UsersController(AppUserRepository users) {
+    public UsersController(AppUserRepository users, DepartmentRepository departments) {
         this.users = users;
+        this.departments = departments;
     }
 
     public record UserView(UUID id, String username, String displayName, String title,
@@ -40,6 +44,14 @@ public class UsersController {
         }
     }
 
+    /** 部门拓扑投影（⑥n 真实化：memberIds 由 app_user.department_id 反查——部门表本身不存成员清单） */
+    public record DepartmentView(UUID id, String name, UUID parentId, UUID leadUserId,
+                                 List<UUID> memberIds) {
+        static DepartmentView of(Department d, List<UUID> memberIds) {
+            return new DepartmentView(d.getId(), d.getName(), d.getParentId(), d.getLeadUserId(), memberIds);
+        }
+    }
+
     @GetMapping("/users")
     @RequirePerm(resourceType = "platform", action = "user:list")
     public List<UserView> list() {
@@ -52,6 +64,24 @@ public class UsersController {
         return users.findAll().stream()
                 .map(UserBrief::of)
                 .sorted(Comparator.comparing(UserBrief::username,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+    }
+
+    /**
+     * 部门拓扑（⑥n 真实化：仅需登录态，同 /users/briefs 口径——团队页「部门拓扑」页签数据源，
+     * 替代 store 原型虚构部门）。产品归组在前端按「产品负责人所属部门」推导（真实 schema
+     * 的 product 无 department_id 列，不虚构关联）。
+     */
+    @GetMapping("/departments")
+    public List<DepartmentView> departmentTree() {
+        var byDept = users.findAll().stream()
+                .filter(u -> u.getDepartmentId() != null)
+                .collect(java.util.stream.Collectors.groupingBy(AppUser::getDepartmentId));
+        return departments.findAll().stream()
+                .map(d -> DepartmentView.of(d,
+                        byDept.getOrDefault(d.getId(), List.of()).stream().map(AppUser::getId).toList()))
+                .sorted(Comparator.comparing(DepartmentView::name,
                         Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
     }

@@ -37,6 +37,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.http.ResponseEntity;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -127,10 +128,16 @@ public class RepositoryController {
         for (Repository r : visible) {
             Map<String, Object> item = toRepoMap(r);
             try {
-                int branchCount = gitPort.branches(r.getRepoPath()).size();
+                List<GitBranch> branches = gitPort.branches(r.getRepoPath());
                 int commitCount = gitPort.commitCount(r.getRepoPath(), r.getDefaultBranch());
-                item.put("branchCount", branchCount);
+                item.put("branchCount", branches.size());
                 item.put("commitCount", commitCount);
+                // ⑥n：最近活动时间 = 全部分支 tip 提交时间取最大（复用 branches 结果零额外 git 调用；
+                // 实体 updatedAt 只在建仓/改配置时推进，卡片「更新于」停在建仓日误导活跃度）
+                branches.stream().map(GitBranch::committedAt)
+                        .filter(java.util.Objects::nonNull)
+                        .max(Instant::compareTo)
+                        .ifPresent(t -> item.put("lastCommitAt", t.toString()));
             } catch (Exception e) {
                 log.debug("获取仓库 Git 统计失败: repo={}, msg={}", r.getRepoPath(), e.getMessage());
                 item.put("branchCount", 0);
@@ -161,6 +168,11 @@ public class RepositoryController {
             res.put("branchCount", branches.size());
             res.put("tagCount", tags.size());
             res.put("commitCount", commitCount);
+            // ⑥n：详情页同口径补最近活动时间
+            branches.stream().map(GitBranch::committedAt)
+                    .filter(java.util.Objects::nonNull)
+                    .max(Instant::compareTo)
+                    .ifPresent(t -> res.put("lastCommitAt", t.toString()));
             res.put("branches", branches);
             res.put("tags", tags);
         } catch (Exception e) {

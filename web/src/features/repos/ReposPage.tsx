@@ -207,7 +207,8 @@ function CreateRepoDialog({
 }
 
 function RemoteRepoCard({ repo, onOpen }: { repo: RemoteRepo; onOpen: () => void }) {
-  const formattedDate = repo.updatedAt ? repo.updatedAt.slice(0, 10) : '刚刚'
+  // ⑥n：优先展示最近提交时间（分支 tip 最大值）；git 统计不可用时回退实体 updatedAt
+  const updatedOn = repo.lastCommitAt?.slice(0, 10) ?? (repo.updatedAt ? repo.updatedAt.slice(0, 10) : '—')
   return (
     <button
       type="button"
@@ -244,7 +245,7 @@ function RemoteRepoCard({ repo, onOpen }: { repo: RemoteRepo; onOpen: () => void
           <GitCommitHorizontal size={12} />
           {repo.commitCount ?? 0} 提交
         </span>
-        <span className="ml-auto shrink-0 tabular-nums">更新于 {formattedDate}</span>
+        <span className="ml-auto shrink-0 tabular-nums" title={repo.lastCommitAt ? `最近提交 ${repo.lastCommitAt.replace('T', ' ').slice(0, 16)}` : '实体更新时间'}>更新于 {updatedOn}</span>
       </div>
     </button>
   )

@@ -144,8 +144,9 @@ export default function ReportsPage({ nav }: PageProps) {
     const done = mine.filter(isDoneItem)
     const withDue = done.filter((w) => w.dueDate)
     const onTime = withDue.length === 0 ? null : withDue.filter((w) => ts(w.updatedAt) <= ts(w.dueDate!)).length / withDue.length
+    // ⑥n：「交付 MR」口径收紧为已合并（open/closed 不是交付；作者=发起人）
     const mrCount = (mrListData?.items ?? []).filter((m) => {
-      if (m.authorId !== u.id) return false
+      if (m.authorId !== u.id || m.status !== 'merged') return false
       const pid = repoProduct.get(m.repoId)
       if (productId) return pid === productId
       return true
@@ -490,7 +491,7 @@ const PERF_COLS: { key: SortKey; label: string }[] = [
   { key: 'name', label: '成员' },
   { key: 'doneCount', label: '完成工作项' },
   { key: 'donePoints', label: '完成故事点' },
-  { key: 'mrCount', label: '交付 MR' },
+  { key: 'mrCount', label: '交付 MR' }, // ⑥n 口径：已合并 MR 数（按发起人）
   { key: 'onTime', label: '按期完成率' },
   { key: 'loadHours', label: '进行中负载(h)' },
 ]

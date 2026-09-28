@@ -39,7 +39,6 @@ class AdminControllerPermissionMatrixTest {
         AppUser owner = user("admin", "平台管理员", AppUser.PlatformRole.OWNER);
         AppUser member = user("dev1", "开发一号", AppUser.PlatformRole.MEMBER);
         AppUser nobody = user("dev2", "开发二号", AppUser.PlatformRole.MEMBER);
-
         AppUserRepository users = mock(AppUserRepository.class);
         when(users.findAll()).thenReturn(List.of(owner, member, nobody));
         RepositoryRepository repos = mock(RepositoryRepository.class);
@@ -66,6 +65,7 @@ class AdminControllerPermissionMatrixTest {
 
         Map<?, ?> ownerRow = rowOf(rows, "admin");
         assertEquals("OWNER", ownerRow.get("platformRole"));
+        assertEquals("ACTIVE", ownerRow.get("status"), "⑥n：用户行携带账号状态（DISABLED 可辨识）");
         Map<?, ?> ownerCell = cellOf(ownerRow, repoId);
         assertEquals("owner", ownerCell.get("role"));
         assertEquals(14, ownerCell.get("capCount"));
