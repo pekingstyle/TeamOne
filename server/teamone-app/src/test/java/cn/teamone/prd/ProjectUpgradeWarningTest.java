@@ -60,12 +60,11 @@ class ProjectUpgradeWarningTest {
                         req("REQ-C2", "project_custom", "draft", compB),
                         req("REQ-C3", "project_custom", "draft", compC),
                         req("REQ-C4", "project_custom", "draft", null)));
-        // 演进集：compA in_dev（红）、compB delivered（黄）
-        when(workItems.findByProductIdAndOriginAndComponentIdIsNotNullAndUpdatedAtGreaterThanEqual(
-                any(UUID.class), any(String.class), any(Instant.class)))
+        // 演进集（⑥q 投影）：compA in_dev（红）、compB delivered（黄）
+        when(workItems.findEvolutionSince(any(UUID.class), any(Instant.class)))
                 .thenReturn(List.of(
-                        req("REQ-P1", "product", "in_dev", compA),
-                        req("REQ-P2", "product", "delivered", compB)));
+                        evo(compA, "REQ-P1", "in_dev"),
+                        evo(compB, "REQ-P2", "delivered")));
 
         Map<String, Object> res = service.upgradeWarnings(projectId.toString());
 
@@ -89,8 +88,7 @@ class ProjectUpgradeWarningTest {
         when(refs.project(projectId.toString())).thenReturn(p);
         when(workItems.findBySourceProjectIdAndOriginOrderByCreatedAtDesc(projectId, "project_custom"))
                 .thenReturn(List.of(req("REQ-C1", "project_custom", "in_dev", UUID.randomUUID())));
-        when(workItems.findByProductIdAndOriginAndComponentIdIsNotNullAndUpdatedAtGreaterThanEqual(
-                any(UUID.class), any(String.class), any(Instant.class)))
+        when(workItems.findEvolutionSince(any(UUID.class), any(Instant.class)))
                 .thenReturn(List.of());
 
         Map<String, Object> res = service.upgradeWarnings(projectId.toString());
@@ -114,6 +112,14 @@ class ProjectUpgradeWarningTest {
         ReflectionTestUtils.setField(c, "id", id);
         c.setName(name);
         return c;
+    }
+
+    private WorkItemRepository.WorkItemEvolutionView evo(UUID componentId, String key, String status) {
+        return new WorkItemRepository.WorkItemEvolutionView() {
+            @Override public UUID getComponentId() { return componentId; }
+            @Override public String getReqKey() { return key; }
+            @Override public String getStatus() { return status; }
+        };
     }
 
     private WorkItem req(String key, String origin, String status, UUID componentId) {

@@ -1101,7 +1101,8 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-txt-mid">所属产品</label>
-                <select value={productId} onChange={(e) => setProductId(e.target.value)} className={`${inputCls} ${fieldErr.productId ? 'border-bad' : ''}`}>
+                {/* ⑥q：产品变更时重置组件选择，防止跨产品组件错配污染预警原料 */}
+                <select value={productId} onChange={(e) => { setProductId(e.target.value); setComponentId('') }} className={`${inputCls} ${fieldErr.productId ? 'border-bad' : ''}`}>
                   <option value="">选择产品…</option>
                   {(productRows ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
@@ -1134,7 +1135,7 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
                   </select>
                 </div>
               )}
-              <div className={origin === 'project_custom' ? 'col-span-2' : 'col-span-2'}>
+              <div className="col-span-2">
                 <label className="mb-1 block text-xs font-medium text-txt-mid">所属组件（影响面）</label>
                 <select value={componentId} onChange={(e) => setComponentId(e.target.value)} className={inputCls}
                   title="客制化需求挂组件后参与升级冲突预警（docs/v2/15 §9）；产品需求挂组件便于演进影响面统计">

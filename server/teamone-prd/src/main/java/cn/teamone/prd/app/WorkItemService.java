@@ -146,6 +146,10 @@ public class WorkItemService {
         UUID productId = spec.productId() != null ? refs.product(spec.productId()).getId() : null;
         if (spec.componentId() != null) {
             Component component = refs.component(spec.componentId());
+            // ⑥q 数据质量：组件必须属于需求归属产品（防错配污染升级预警原料）；productId 为空时继承组件产品
+            if (productId != null && !component.getProductId().equals(productId)) {
+                throw new BusinessException(ErrorCode.PLT_4000, "组件不属于该产品，请重新选择所属组件");
+            }
             wi.setComponentId(component.getId());
             if (productId == null) {
                 productId = component.getProductId();
@@ -329,7 +333,12 @@ public class WorkItemService {
             wi.setAssigneeId(refs.userId(spec.assigneeId()));
         }
         if (spec.componentId() != null) {
-            wi.setComponentId(refs.component(spec.componentId()).getId());
+            Component component = refs.component(spec.componentId());
+            // ⑥q 数据质量：update 同样校验组件-产品一致（含组件已被换到别产品的漂移场景）
+            if (wi.getProductId() != null && !component.getProductId().equals(wi.getProductId())) {
+                throw new BusinessException(ErrorCode.PLT_4000, "组件不属于该产品，请重新选择所属组件");
+            }
+            wi.setComponentId(component.getId());
         }
         if (spec.sprintId() != null) {
             wi.setSprintId(refs.sprint(spec.sprintId()).getId());

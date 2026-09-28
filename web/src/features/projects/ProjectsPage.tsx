@@ -215,6 +215,11 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
                 <AlertTriangle size={11} /> 升级冲突预警（{warnQ.data ? warnQ.data.redCount + warnQ.data.yellowCount : '…'}）
               </div>
               <div className="space-y-1.5">
+                {warnQ.isError && (
+                  <div className="rounded-lg border border-dashed border-bad/40 bg-canvas/60 p-3 text-xs text-txt-low">
+                    预警计算加载失败——请点开抽屉重试或刷新页面（不影响双轮度量）。
+                  </div>
+                )}
                 {(warnQ.data?.items ?? []).map((w) => (
                   <div key={w.componentId} className={`rounded-lg border px-2.5 py-2 text-xs ${
                     w.severity === 'red' ? 'border-bad/40 bg-bad/5' : 'border-warn/40 bg-warn/5'
@@ -233,7 +238,7 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
                     </div>
                   </div>
                 ))}
-                {warnQ.data && warnQ.data.items.length === 0 && (
+                {warnQ.data && !warnQ.isError && warnQ.data.items.length === 0 && (
                   <div className="rounded-lg border border-dashed border-line bg-canvas/60 p-3 text-xs text-txt-low">
                     暂无升级冲突——客制模块与产品演进无重叠；客制化需求挂上「所属组件」后可计算影响面。
                   </div>

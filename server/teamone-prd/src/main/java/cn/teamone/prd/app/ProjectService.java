@@ -189,11 +189,12 @@ public class ProjectService {
         // E：产品演进需求的组件（基线之后动过的）
         Map<UUID, Set<String>> evolveByComp = new LinkedHashMap<>();
         Set<UUID> inDevComps = new LinkedHashSet<>();
-        for (WorkItem wi : workItems.findByProductIdAndOriginAndComponentIdIsNotNullAndUpdatedAtGreaterThanEqual(
-                p.getProductId(), WorkItem.ORIGIN_PRODUCT, baseline)) {
-            evolveByComp.computeIfAbsent(wi.getComponentId(), k -> new LinkedHashSet<>()).add(wi.getKey());
-            if ("in_dev".equals(wi.getStatus())) {
-                inDevComps.add(wi.getComponentId());
+        // ⑥q：三列投影 + V24 部分索引（演进语义=工作项动过即算，缺陷修复亦是演进——docs §9 口径）
+        for (WorkItemRepository.WorkItemEvolutionView v
+                : workItems.findEvolutionSince(p.getProductId(), baseline)) {
+            evolveByComp.computeIfAbsent(v.getComponentId(), k -> new LinkedHashSet<>()).add(v.getReqKey());
+            if ("in_dev".equals(v.getStatus())) {
+                inDevComps.add(v.getComponentId());
             }
         }
 

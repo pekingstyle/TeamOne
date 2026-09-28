@@ -1,5 +1,6 @@
 package cn.teamone.prd.app;
 
+import cn.teamone.prd.domain.Component;
 import cn.teamone.prd.domain.Product;
 import cn.teamone.prd.domain.RoadmapItem;
 import cn.teamone.prd.domain.StrategicGoal;
@@ -10,6 +11,8 @@ import cn.teamone.prd.repo.WorkItemRepository;
 import cn.teamone.platform.authz.PermissionService;
 import cn.teamone.platform.infra.IdempotencyService;
 import cn.teamone.platform.infra.OutboxWriter;
+import cn.teamone.shared.api.BusinessException;
+import cn.teamone.shared.api.ErrorCode;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +21,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -103,6 +107,40 @@ class WorkItemServiceDirectLinkTest {
         ArgumentCaptor<WorkItem> captor = ArgumentCaptor.forClass(WorkItem.class);
         verify(workItems).saveAndFlush(captor.capture());
         return captor.getValue();
+    }
+
+    /** ⑥q 数据质量：组件不属于需求归属产品 → 400（防错配污染升级预警原料） */
+    @Test
+    void createWithForeignComponentRejectedAs400() {
+        Component foreign = mock(Component.class);
+        when(refs.component("other-comp")).thenReturn(foreign);
+        when(foreign.getId()).thenReturn(UUID.randomUUID());
+        when(foreign.getProductId()).thenReturn(UUID.randomUUID()); // ≠ PRODUCT_ID
+
+        WorkItemService.CreateSpec spec = new WorkItemService.CreateSpec(
+                "requirement", "一致性负例", null, null, null, null,
+                PRODUCT_ID.toString(), "other-comp", null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null);
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.create(spec, ACTOR_ID, null));
+        assertEquals(ErrorCode.PLT_4000, ex.errorCode());
+    }
+
+    /** ⑥q 数据质量：组件属于归属产品 → 正常落库（正向对照） */
+    @Test
+    void createWithMatchingComponentAllowed() {
+        Component own = mock(Component.class);
+        when(refs.component("own-comp")).thenReturn(own);
+        when(own.getId()).thenReturn(UUID.randomUUID());
+        when(own.getProductId()).thenReturn(PRODUCT_ID);
+
+        WorkItemService.CreateSpec spec = new WorkItemService.CreateSpec(
+                "requirement", "一致性正向", null, null, null, null,
+                PRODUCT_ID.toString(), "own-comp", null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null);
+
+        service.create(spec, ACTOR_ID, null);
+        assertEquals(PRODUCT_ID, capturedCreate().getProductId());
     }
 
     /** 挂条目创建：goal_id 派生自条目（条目路径权威，显式 goalId 同传时被条目归属覆盖） */

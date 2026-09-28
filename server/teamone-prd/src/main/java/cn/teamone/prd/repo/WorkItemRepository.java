@@ -113,7 +113,21 @@ public interface WorkItemRepository
     /** 项目的客制化需求条目（项目详情视图，创建时间倒序） */
     List<WorkItem> findBySourceProjectIdAndOriginOrderByCreatedAtDesc(UUID sourceProjectId, String origin);
 
-    /** ⑥p 升级预警：产品演进集——同产品 origin=product、挂组件、基线后动过（updated_at ≥ baseline） */
-    List<WorkItem> findByProductIdAndOriginAndComponentIdIsNotNullAndUpdatedAtGreaterThanEqual(
-            UUID productId, String origin, java.time.Instant baseline);
+    /** ⑥q 演进集投影（E 查询只读三列，避免全实体水合含 description 大列） */
+    interface WorkItemEvolutionView {
+        UUID getComponentId();
+        String getReqKey();
+        String getStatus();
+    }
+
+    /** ⑥p 升级预警：产品演进集——同产品 origin=product、挂组件、基线后动过（⑥q 投影化 + V24 部分索引）。
+     *  QA 建议随批闭环：origin 恒为 'product' 故字面量内联（M1 纪律——部分索引谓词列参数化会使
+     *  generic plan 无法证明命中而回退全表扫），调用方不再传 origin。 */
+    @org.springframework.data.jpa.repository.Query(
+            "select w.componentId as componentId, w.key as reqKey, w.status as status "
+            + "from WorkItem w where w.productId = :productId and w.origin = 'product' "
+            + "and w.componentId is not null and w.updatedAt >= :since")
+    List<WorkItemEvolutionView> findEvolutionSince(
+            @org.springframework.data.repository.query.Param("productId") UUID productId,
+            @org.springframework.data.repository.query.Param("since") java.time.Instant since);
 }

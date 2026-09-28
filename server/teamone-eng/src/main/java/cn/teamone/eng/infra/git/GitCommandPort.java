@@ -137,6 +137,18 @@ public class GitCommandPort implements GitPort {
         validateRef(a);
         validateRef(d);
         String gitDir = resolveGitDir(repoKey);
+        // ⑥q QA 建议随批闭环：rev-parse 退出码预判引用存在性（免疫 git gettext 本地化文案差异，
+        // 同 cherryPick :1074 模式），再进 merge-base——is-ancestor 对坏 ref 的 exit 128 仅作 503 兜底
+        ExecResult verifyA = execFull(List.of("git", "--git-dir", gitDir,
+                "rev-parse", "-q", "--verify", a + "^{commit}"), repoKey, null, false);
+        if (verifyA.exitCode() != 0) {
+            throw new BusinessException(ErrorCode.PLT_4040, "引用不存在或非提交对象: " + a);
+        }
+        ExecResult verifyD = execFull(List.of("git", "--git-dir", gitDir,
+                "rev-parse", "-q", "--verify", d + "^{commit}"), repoKey, null, false);
+        if (verifyD.exitCode() != 0) {
+            throw new BusinessException(ErrorCode.PLT_4040, "引用不存在或非提交对象: " + d);
+        }
         ExecResult res = execFull(List.of("git", "--git-dir", gitDir,
                 "merge-base", "--is-ancestor", a, d), repoKey, null, false);
         if (res.exitCode() > 1) {
