@@ -59,6 +59,21 @@ public interface GitPort {
     void deleteBranch(String repoKey, String name);
 
     /**
+     * 判定 ancestorRef 是否为 descendantRef 的祖先（⑥p 分支快进前置校验：
+     * {@code git merge-base --is-ancestor}，退出码 0=是 / 1=否）。
+     */
+    boolean isAncestor(String repoKey, String ancestorRef, String descendantRef);
+
+    /**
+     * 快进分支（⑥p：CAS {@code git update-ref refs/heads/<name> <toRef> <oldSha>}，只前移不改历史）。
+     *
+     * <p>实现必须：分支名/toRef 白名单校验（防注入）；oldSha 为并发护栏（与 merge/cherryPick
+     * 同形态——窗口内分支被并发移动时 CAS 失败抛 409 而非强移）；「是否快进」判定与 409 预判
+     * 由调用方先经 {@link #isAncestor} 完成——本方法不做策略判断。</p>
+     */
+    void fastForwardBranch(String repoKey, String name, String toRef, String oldSha);
+
+    /**
      * 列出仓库所有标签。
      *
      * @param repoKey 仓库键（相对 TEAMONE_GIT_ROOT，如 teamone/teamone.git）

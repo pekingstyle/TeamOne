@@ -112,4 +112,8 @@ public interface WorkItemRepository
 
     /** 项目的客制化需求条目（项目详情视图，创建时间倒序） */
     List<WorkItem> findBySourceProjectIdAndOriginOrderByCreatedAtDesc(UUID sourceProjectId, String origin);
+
+    /** ⑥p 升级预警：产品演进集——同产品 origin=product、挂组件、基线后动过（updated_at ≥ baseline） */
+    List<WorkItem> findByProductIdAndOriginAndComponentIdIsNotNullAndUpdatedAtGreaterThanEqual(
+            UUID productId, String origin, java.time.Instant baseline);
 }

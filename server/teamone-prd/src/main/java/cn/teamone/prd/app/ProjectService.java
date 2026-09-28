@@ -15,10 +15,14 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -155,6 +159,69 @@ public class ProjectService {
             p.setPlanAcceptDate(spec.planAcceptDate());
         }
         return assembleDetail(p);
+    }
+
+    /**
+     * 升级冲突预警（⑥p · docs/v2/15 §9）：客制组件集 ∩ 产品演进组件集。
+     *
+     * <p>口径：客制集 C = 本项目 origin=project_custom 且挂了组件的需求；演进集 E = 同产品
+     * origin=product、挂了组件、且 updated_at ≥ 项目基线（startDate，缺省 createdAt）的需求
+     * （产品线在该项目启动后动过/在动的模块）。预警项 = C∩E 按组件聚合，severity：E 中该组件
+     * 存在 status=in_dev 的需求 → red（马上要撞），否则 yellow（已动过需回归）。已回流的客制件
+     * 仍计入 C（产品侧回流复制体若挂同组件会同时出现在 E——预警项展开两侧需求 key，可辨识
+     * 「已回流对齐」情形）。</p>
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> upgradeWarnings(String id) {
+        Project p = refs.project(id);
+        Instant baseline = (p.getStartDate() != null ? p.getStartDate() : 
+                p.getCreatedAt() != null ? p.getCreatedAt().atZone(ZoneOffset.UTC).toLocalDate() : LocalDate.now())
+                .atStartOfDay(ZoneOffset.UTC).toInstant();
+
+        // C：本项目的客制组件（全状态——已回流件也是升级需对齐的客制痕迹）
+        Map<UUID, Set<String>> customByComp = new LinkedHashMap<>();
+        for (WorkItem wi : workItems.findBySourceProjectIdAndOriginOrderByCreatedAtDesc(
+                p.getId(), WorkItem.ORIGIN_PROJECT_CUSTOM)) {
+            if (wi.getComponentId() != null) {
+                customByComp.computeIfAbsent(wi.getComponentId(), k -> new LinkedHashSet<>()).add(wi.getKey());
+            }
+        }
+        // E：产品演进需求的组件（基线之后动过的）
+        Map<UUID, Set<String>> evolveByComp = new LinkedHashMap<>();
+        Set<UUID> inDevComps = new LinkedHashSet<>();
+        for (WorkItem wi : workItems.findByProductIdAndOriginAndComponentIdIsNotNullAndUpdatedAtGreaterThanEqual(
+                p.getProductId(), WorkItem.ORIGIN_PRODUCT, baseline)) {
+            evolveByComp.computeIfAbsent(wi.getComponentId(), k -> new LinkedHashSet<>()).add(wi.getKey());
+            if ("in_dev".equals(wi.getStatus())) {
+                inDevComps.add(wi.getComponentId());
+            }
+        }
+
+        List<Map<String, Object>> items = new ArrayList<>();
+        int red = 0;
+        for (UUID compId : customByComp.keySet()) {
+            Set<String> productKeys = evolveByComp.get(compId);
+            if (productKeys == null) {
+                continue;
+            }
+            String severity = inDevComps.contains(compId) ? "red" : "yellow";
+            if ("red".equals(severity)) {
+                red++;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("componentId", compId);
+            item.put("componentName", refs.component(compId.toString()).getName());
+            item.put("severity", severity);
+            item.put("customReqKeys", List.copyOf(customByComp.get(compId)));
+            item.put("productReqKeys", List.copyOf(productKeys));
+            items.add(item);
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("baselineDate", baseline.toString());
+        res.put("redCount", red);
+        res.put("yellowCount", items.size() - red);
+        res.put("items", items);
+        return res;
     }
 
     // ==================== 内部 ====================

@@ -449,6 +449,8 @@ public class WorkItemService {
         target.setReporterId(actorId);
         target.setProductId(source.getProductId());
         target.setLabels(source.getLabels());
+        // QA ②随批闭环：承接所属组件——回流对齐场景真实可现（复制体进 E 集，预警项可辨识）
+        target.setComponentId(source.getComponentId());
         target.setOrigin(WorkItem.ORIGIN_PRODUCT); // 回流目标恒为产品标准需求
         target.setKey(sequences.nextKey(SEQUENCE_TYPES.get(WorkItem.TYPE_REQUIREMENT)));
 
@@ -541,6 +543,10 @@ public class WorkItemService {
                     : sourceSpec;
             wi.setSourceProjectId(resolveSourceProject(source));
         } else {
+            // ⑥p QA 挂账清偿：product 来源显式传 sourceProjectId → 400（原先静默丢弃无提示）
+            if (sourceSpec != null && !sourceSpec.isBlank()) {
+                throw new BusinessException(ErrorCode.PLT_4000, "产品来源需求不可设来源项目（sourceProjectId 仅客制化来源可用）");
+            }
             wi.setSourceProjectId(null);
         }
         wi.setOrigin(origin);

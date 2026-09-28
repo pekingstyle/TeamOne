@@ -3,10 +3,10 @@
 // 口径：客制化率 = 客制化需求 / 产品全部工作项（客制占产品账本比例）；回流率 = 已回流 / 客制化（rate 均为 0~1 小数）。
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Building2, CalendarRange, Package, Plus, RefreshCcw, X } from 'lucide-react'
+import { AlertTriangle, Building2, CalendarRange, Package, Plus, RefreshCcw, X } from 'lucide-react'
 import type { PageProps } from '../../nav'
 import {
-  projectsApi, useProducts, useProject, useProjects, workItemsApi,
+  projectsApi, useProducts, useProject, useProjects, useUpgradeWarnings, workItemsApi,
   type RemoteProject, type RemoteProjectItem,
 } from '../../api/queries'
 import { toBrief, useUserBriefs } from '../../api/users'
@@ -138,6 +138,7 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
 }) {
   const queryClient = useQueryClient()
   const projQ = useProject(id)
+  const warnQ = useUpgradeWarnings(id)
   const { data: briefRows } = useUserBriefs()
   const briefs = toBrief(briefRows)
   const [busyKey, setBusyKey] = useState<string | undefined>()
@@ -205,6 +206,39 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
               <span className="font-semibold text-txt-hi">双轮汇总</span>
               <span title={`客制 ${p.customTotal}/${totalOf(p)} 项`}>客制化 <strong className="tabular-nums text-cat-teal">{pct(p.customRate)}</strong>（客制 {p.customTotal}/{totalOf(p)} 项）</span>
               <span title={`已回流 ${p.promotedTotal}/${p.customTotal} 项`}>回流 <strong className="tabular-nums text-brand">{pct(p.promoteRate)}</strong>（已回流 {p.promotedTotal}/{p.customTotal} 项）</span>
+            </div>
+
+            {/* 升级冲突预警（⑥p · docs/v2/15 §9）：客制组件集 ∩ 产品演进组件集 */}
+            <div className="mt-4">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-txt-low"
+                title={`口径：本项目的客制需求所挂组件 ∩ 产品线在基线（${fmtDay(warnQ.data?.baselineDate)}）后动过的组件；红=产品 in_dev 正在改同一模块（升级前须对齐），黄=产品已动过（升级需回归）。客制需求未挂组件时不参与计算。`}>
+                <AlertTriangle size={11} /> 升级冲突预警（{warnQ.data ? warnQ.data.redCount + warnQ.data.yellowCount : '…'}）
+              </div>
+              <div className="space-y-1.5">
+                {(warnQ.data?.items ?? []).map((w) => (
+                  <div key={w.componentId} className={`rounded-lg border px-2.5 py-2 text-xs ${
+                    w.severity === 'red' ? 'border-bad/40 bg-bad/5' : 'border-warn/40 bg-warn/5'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      <Pill tone={w.severity === 'red' ? 'bad' : 'warn'}>
+                        {w.severity === 'red' ? '撞线' : '需回归'}
+                      </Pill>
+                      <span className="font-semibold text-txt-hi">{w.componentName}</span>
+                      <span className="text-txt-low">客制 {w.customReqKeys.join('、')} × 产品 {w.productReqKeys.join('、')}</span>
+                    </div>
+                    <div className="mt-1 text-[11px] text-txt-low">
+                      {w.severity === 'red'
+                        ? `产品线正在改该模块（${w.productReqKeys.join('、')} 开发中）——升级版本前须先对齐合入`
+                        : `产品线基线后动过该模块（${w.productReqKeys.join('、')}）——升级时需回归客制`}
+                    </div>
+                  </div>
+                ))}
+                {warnQ.data && warnQ.data.items.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-line bg-canvas/60 p-3 text-xs text-txt-low">
+                    暂无升级冲突——客制模块与产品演进无重叠；客制化需求挂上「所属组件」后可计算影响面。
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* 客制化需求列表：key/标题/状态/回流徽标 + 未回流项行内回流按钮 */}

@@ -64,6 +64,13 @@ public class ProjectController {
         return projects.get(id);
     }
 
+    /** 升级冲突预警（⑥p · docs/v2/15 §9）：客制组件集 ∩ 产品演进组件集，红=in_dev 撞线 */
+    @GetMapping("/{id}/upgrade-warnings")
+    public Map<String, Object> upgradeWarnings(@PathVariable String id) {
+        Actor.require();
+        return projects.upgradeWarnings(id);
+    }
+
     /** 更新（If-Match: <version> 乐观锁，同工作项惯例；可改 customer_name/status/manager_id/日期） */
     @PutMapping("/{id}")
     public Map<String, Object> update(@PathVariable String id,

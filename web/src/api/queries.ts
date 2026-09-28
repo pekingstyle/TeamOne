@@ -2420,6 +2420,8 @@ export const requirementsApi = {
     storyPoints?: number
     origin?: 'product' | 'project_custom'
     sourceProjectId?: string
+    /** ⑥p：所属组件（升级预警/影响面原料；缺陷表单同源字段） */
+    componentId?: string
   }): Promise<RemoteWorkItem> {
     return api<RemoteWorkItem>('/api/v1/work-items', {
       method: 'POST',
@@ -3048,5 +3050,33 @@ export function useDepartments() {
     queryKey: ['departments'],
     queryFn: () => api<RemoteDepartment[]>('/api/v1/departments'),
     staleTime: 60_000,
+  })
+}
+
+// ---------------- 升级冲突预警（⑥p · docs/v2/15 §9：客制组件集 ∩ 产品演进组件集） ----------------
+
+/** 预警项：一个重叠组件（red=产品 in_dev 撞线 / yellow=已动过需回归） */
+export interface UpgradeWarningItem {
+  componentId: string
+  componentName: string
+  severity: 'red' | 'yellow'
+  customReqKeys: string[]
+  productReqKeys: string[]
+}
+
+export interface UpgradeWarnings {
+  baselineDate: string
+  redCount: number
+  yellowCount: number
+  items: UpgradeWarningItem[]
+}
+
+/** GET /api/v1/projects/{id}/upgrade-warnings（登录态；客制需求未挂组件时集合为空 → 无预警） */
+export function useUpgradeWarnings(projectId?: string) {
+  return useQuery({
+    queryKey: ['upgrade-warnings', projectId],
+    queryFn: () => api<UpgradeWarnings>(`/api/v1/projects/${encodeURIComponent(projectId ?? '')}/upgrade-warnings`),
+    enabled: !!projectId,
+    staleTime: 30_000,
   })
 }

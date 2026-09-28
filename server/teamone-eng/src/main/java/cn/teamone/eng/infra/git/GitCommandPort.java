@@ -127,6 +127,50 @@ public class GitCommandPort implements GitPort {
     }
 
     @Override
+    public boolean isAncestor(String repoKey, String ancestorRef, String descendantRef) {
+        requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
+        if (ancestorRef == null || ancestorRef.isBlank() || descendantRef == null || descendantRef.isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "ancestor/descendant ref 不能为空");
+        }
+        String a = ancestorRef.trim();
+        String d = descendantRef.trim();
+        validateRef(a);
+        validateRef(d);
+        String gitDir = resolveGitDir(repoKey);
+        ExecResult res = execFull(List.of("git", "--git-dir", gitDir,
+                "merge-base", "--is-ancestor", a, d), repoKey, null, false);
+        if (res.exitCode() > 1) {
+            throw new BusinessException(ErrorCode.SRV_5030, "git is-ancestor 失败: " + a + " " + d);
+        }
+        return res.exitCode() == 0;
+    }
+
+    @Override
+    public void fastForwardBranch(String repoKey, String name, String toRef, String oldSha) {
+        requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
+        if (name == null || name.isBlank() || toRef == null || toRef.isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "分支名与目标 ref 不能为空");
+        }
+        String cleanName = name.trim();
+        String cleanTo = toRef.trim();
+        String cleanOld = oldSha == null ? "" : oldSha.trim();
+        if (cleanOld.isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "oldSha（当前头）不能为空——CAS 快进必填");
+        }
+        validateRef(cleanName);
+        validateRef(cleanTo);
+        validateRef(cleanOld);
+        String gitDir = resolveGitDir(repoKey);
+        // QA ①随批闭环：CAS update-ref（<new> <old>），与 merge/cherryPick 统一并发安全姿态
+        ExecResult upd = execFull(buildUpdateRefCommand(gitDir, cleanName, cleanTo, cleanOld),
+                repoKey, null, false);
+        if (upd.exitCode() != 0) {
+            throw new BusinessException(ErrorCode.PLT_4091,
+                    "分支 " + cleanName + " 快进窗口内被并发移动，请刷新后重试");
+        }
+    }
+
+    @Override
     public List<GitCommit> commits(String repoKey, String ref, int page, int size) {
         requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
         String cleanRef = (ref == null || ref.isBlank()) ? "HEAD" : ref.trim();

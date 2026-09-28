@@ -260,6 +260,51 @@ public class RepositoryController {
     }
 
     /**
+     * 快进分支（⑥p · release 推进等集成操作：只前移分支引用不改历史）。
+     *
+     * <p>ACL：Maintainer+（§2.4 同 close/reopen 的「集成操作」档，服务层角色下限判定）。
+     * 治理双闸：①受保护分支（branch_protection 命中）409 提示走 MR——保护的是「怎么合入」，
+     * 快进 main/develop 会绕过会签与门禁，禁止；②非快进（目标不是当前头的后代）409——
+     * 需要改历史的场景一律走 MR/rebase，不给快捷通道。</p>
+     */
+    @PostMapping("/{idOrName}/branches/fast-forward")
+    public Map<String, Object> fastForwardBranch(
+            @PathVariable String idOrName,
+            @RequestBody FastForwardBranchRequest req,
+            @AuthenticationPrincipal AppUser me) {
+        // 分支名常含斜杠且 {*name} 后不许再接路径段——名字放 body（与 DELETE 的 {*name} 末段形态并存）
+        if (req == null || req.name() == null || req.name().isBlank() || req.toRef() == null || req.toRef().isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "分支名(name)与目标 ref(toRef) 均不能为空");
+        }
+        String cleanName = req.name().trim();
+        Repository repo = findRepo(idOrName);
+        permChecker.requireRoleAtLeast(me.getId(), repo.getId(), RepoRole.MAINTAINER, "分支快进");
+        if (branchProtectionService.findMatchingProtection(repo.getId(), cleanName).isPresent()) {
+            throw new BusinessException(ErrorCode.PLT_4091,
+                    "分支 '" + cleanName + "' 受保护，快进会绕过会签与门禁，请走 MR 合入");
+        }
+        String current = gitPort.branches(repo.getRepoPath()).stream()
+                .filter(b -> b.name().equals(cleanName))
+                .map(GitBranch::commitSha)
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.PLT_4040, "分支不存在: " + cleanName));
+        String toRef = req.toRef().trim();
+        if (!gitPort.isAncestor(repo.getRepoPath(), current, toRef)) {
+            throw new BusinessException(ErrorCode.PLT_4091,
+                    "非快进（" + cleanName + " 不是 " + toRef + " 的祖先）：需改历史的场景请走 MR/rebase");
+        }
+        gitPort.fastForwardBranch(repo.getRepoPath(), cleanName, toRef, current);
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("name", cleanName);
+        res.put("from", current);
+        res.put("to", toRef);
+        return res;
+    }
+
+    /** 快进请求（name=待推进分支名，toRef=目标分支/tag/sha） */
+    public record FastForwardBranchRequest(String name, String toRef) {}
+
+    /**
      * Tag 列表。
      *
      * <p>ACL（M-b B1）：view（§2.2 view 生效点）。</p>

@@ -9,7 +9,7 @@ import { ArrowRight, Check, ChevronDown, ChevronRight, Eye, FileCode, FileText, 
 import { useQueryClient } from '@tanstack/react-query'
 import type { PageProps } from '../../nav'
 import type { ReqStatus, Requirement } from '../../data/types'
-import {
+import { useComponents,
   filesApi, parseFieldError, remoteToRequirement, requirementsApi,
   useConversations, useGoals, useProducts, useProjects, useRequirementReviewRounds, useRequirementReviews,
   useRequirements, useReleases, useRoadmapItems, useSprints, useWorkItems, workItemsApi,
@@ -969,6 +969,9 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const { data: projectRows } = useProjects()
   const [origin, setOrigin] = useState<'product' | 'project_custom'>('product')
   const [sourceProjectId, setSourceProjectId] = useState('')
+  // ⑥p：所属组件（客制化影响面/升级预警的计算原料；按所选产品过滤）
+  const { data: componentRows } = useComponents()
+  const [componentId, setComponentId] = useState('')
   const [points, setPoints] = useState('5')
   const [busy, setBusy] = useState(false)
   const [fieldErr, setFieldErr] = useState<Record<string, string>>({})
@@ -1022,6 +1025,7 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
         storyPoints: Number(points) || undefined,
         origin,
         sourceProjectId: origin === 'project_custom' && sourceProjectId ? sourceProjectId : undefined,
+        componentId: componentId || undefined,
       })
       await queryClient.invalidateQueries({ queryKey: ['requirements'] })
       onDone()
@@ -1130,6 +1134,16 @@ function NewReqModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
                   </select>
                 </div>
               )}
+              <div className={origin === 'project_custom' ? 'col-span-2' : 'col-span-2'}>
+                <label className="mb-1 block text-xs font-medium text-txt-mid">所属组件（影响面）</label>
+                <select value={componentId} onChange={(e) => setComponentId(e.target.value)} className={inputCls}
+                  title="客制化需求挂组件后参与升级冲突预警（docs/v2/15 §9）；产品需求挂组件便于演进影响面统计">
+                  <option value="">暂不指定</option>
+                  {(componentRows ?? [])
+                    .filter((c) => !productId || c.productId === productId)
+                    .map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div>

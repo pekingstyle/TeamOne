@@ -48,6 +48,17 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(ApiError.of(ErrorCode.PLT_4000, "请求体不可解析（需 UTF-8 JSON）"));
     }
 
+    /**
+     * 乐观锁并发冲突（⑥p 挂账清偿）：@Version 命中 0 行（如两并发回流同一需求，
+     * promoteToProduct/If-Match 更新竞争）——409 引导刷新重试，不再落 500 兜底。
+     */
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiError> optimisticLock(org.springframework.dao.OptimisticLockingFailureException e) {
+        log.debug("optimistic lock conflict: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiError.of(ErrorCode.PLT_4091, "并发修改冲突，请刷新后重试"));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> unexpected(Exception e) {
         String traceId = java.util.UUID.randomUUID().toString();
