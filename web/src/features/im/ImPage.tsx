@@ -35,10 +35,12 @@ import {
   filesApi,
   patchConversationUnread,
   reportViewedConv,
+  requirementsApi,
   useConversationDetail,
   useConversations,
   useMessageReaders,
   useMessages,
+  useProducts,
   type RemoteConversation,
 } from '../../api/queries'
 import type { MessagePage, RemoteAttachment, RemoteMessage } from '../../api/queries'
@@ -101,7 +103,37 @@ function fromRemote(m: RemoteMessage): MsgRow {
 }
 
 export default function ImPage({ nav, id }: PageProps) {
+  const { data: products } = useProducts()
   const queryClient = useQueryClient()
+  // ⑥t 话题转需求：把非需求对象的讨论话题沉淀为产品需求（草稿进需求池）
+  const [topicReqOpen, setTopicReqOpen] = useState(false)
+  const [topicReqProductId, setTopicReqProductId] = useState('')
+  const [topicReqBusy, setTopicReqBusy] = useState(false)
+  const [topicReqMsg, setTopicReqMsg] = useState<{ ok: boolean; text: string } | undefined>()
+  const submitTopicToRequirement = async () => {
+    if (!selConv || !topicReqProductId) return
+    setTopicReqBusy(true)
+    setTopicReqMsg(undefined)
+    try {
+      const req = await requirementsApi.create({
+        title: selConv.name || '话题转需求',
+        description: `来源：IM 话题「${selConv.name}」（会话 ${selConv.id.slice(0, 8)}）
+
+（⑥t 收集入口：话题一键转需求，请补充需求详情与验收标准）`,
+        productId: topicReqProductId,
+        priority: 'P2',
+        origin: 'product',
+      })
+      await queryClient.invalidateQueries({ queryKey: ['requirements'] })
+      await queryClient.invalidateQueries({ queryKey: ['backlog-pool'] })
+      setTopicReqOpen(false)
+      setTopicReqMsg({ ok: true, text: `已转需求 ${req.key}（草稿，可在需求池查看）` })
+    } catch (e) {
+      setTopicReqMsg({ ok: false, text: e instanceof Error ? e.message : '转需求失败' })
+    } finally {
+      setTopicReqBusy(false)
+    }
+  }
   const { user } = useAuth()
   const myId = user?.id ?? ''
   // dogfooding：成员选择/私信建会话仅需登录态（briefs）——原 GET /users 需管理权限，普通成员 403 后选择器恒空
@@ -946,6 +978,14 @@ export default function ImPage({ nav, id }: PageProps) {
                         </span>
                         {selConv.type === 'group' && <Pill tone="ok">群聊</Pill>}
                         {selConv.autoCreated && <Pill tone="purple">自动建题</Pill>}
+                        {(selConv.type === 'topic' || selConv.type === 'group') && !archived && (
+                          <button type="button" onClick={() => setTopicReqOpen(true)}
+                            className={"cursor-pointer rounded-full border border-line px-2 py-0.5 text-[10px] font-semibold " + (selConv.targetType === 'requirement' ? 'text-txt-low/50' : 'text-brand hover:bg-brand-bg')}
+                            title={selConv.targetType === 'requirement' ? '该话题已关联需求' : '把该话题沉淀为产品需求（⑥t 收集入口）'}
+                            disabled={selConv.targetType === 'requirement'}>
+                            转需求
+                          </button>
+                        )}
                       </>
                     )}
                     {archived && (
@@ -1271,6 +1311,34 @@ export default function ImPage({ nav, id }: PageProps) {
               >
                 创建群聊
               </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {topicReqMsg && (
+        <div className="fixed bottom-6 left-1/2 z-[80] flex -translate-x-1/2 items-center gap-2 rounded-full border border-line bg-canvas px-4 py-2 text-sm shadow-lg">
+          <span className={`h-2 w-2 rounded-full ${topicReqMsg.ok ? 'bg-ok' : 'bg-bad'}`}/>{topicReqMsg.text}
+        </div>
+      )}
+      {/* ⑥t 话题转需求弹窗 */}
+      {topicReqOpen && selConv && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-line bg-card p-5 shadow-2xl">
+            <h3 className="text-sm font-bold text-txt-hi">话题转需求</h3>
+            <p className="mt-1 text-xs text-txt-low">将话题「{selConv.name}」沉淀为产品需求（草稿进需求池，后续补充详情与验收标准）。</p>
+            <label className="mb-1 mt-3 block text-xs font-medium text-txt-mid">所属产品</label>
+            <select value={topicReqProductId} onChange={(e) => setTopicReqProductId(e.target.value)}
+              className="w-full rounded-input border border-line bg-canvas px-2.5 py-1.5 text-sm text-txt-hi">
+              <option value="">选择产品…</option>
+              {(products ?? []).map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>)}
+            </select>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setTopicReqOpen(false)}
+                className="cursor-pointer rounded-lg px-3 py-1.5 text-xs text-txt-mid hover:text-txt-hi">取消</button>
+              <button type="button" disabled={topicReqBusy || !topicReqProductId} onClick={() => void submitTopicToRequirement()}
+                className="cursor-pointer rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                {topicReqBusy ? '创建中…' : '创建需求'}
+              </button>
             </div>
           </div>
         </div>

@@ -5,7 +5,7 @@
 //   * 评审记录：GET /work-items/{key}/review-rounds 按轮次分组（round/评审人/结果/意见/时间/结论），无 store 兜底；
 //   * 纪要：platform.file 两步制上传（POST/PUT /review-rounds/{round}/minutes），查看走既有下载通道。
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Check, ChevronDown, ChevronRight, Eye, FileCode, FileText, Hash, Paperclip, Plus, RefreshCcw, Upload, X } from 'lucide-react'
+import { ArrowRight, Check, ChevronDown, ChevronRight, Eye, FileCode, FileText, Hash, ListChecks, Paperclip, Plus, RefreshCcw, Upload, X } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { PageProps } from '../../nav'
 import type { ReqStatus, Requirement } from '../../data/types'
@@ -361,6 +361,59 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
   onClose: () => void
   onPatched: (rid: string, patch: Partial<Requirement>) => void
 }) {
+  const queryClientDrawer = useQueryClient()
+  // ⑥t 验收标准→任务：解析 PRD「## 验收标准」列表项，逐条建拆解任务（父=本需求）
+  const [splitting, setSplitting] = useState(false)
+  const [splitMsg, setSplitMsg] = useState('')
+  const [splitOk, setSplitOk] = useState(false)
+  const acceptItems = useMemo(() => {
+    // QA MUST-FIX：验收标准可能在 PRD 正文（docContent，模板标题为「## 5. 验收标准 (…)」带编号与
+    // 复选框条目）或简述（description）——两处都扫；标题含「验收标准」即认；条目剥 `- [ ]` 标记
+    const sources = [rq.description || '', rq.docContent || '']
+    for (const src of sources) {
+      const lines = src.split('\n')
+      const head = lines.findIndex((l) => l.includes('验收标准') && l.trim().startsWith('#'))
+      if (head === -1) continue
+      const rest = lines.slice(head + 1)
+      const stopIdx = rest.findIndex((l) => l.trim().startsWith('#'))
+      const seg = (stopIdx === -1 ? rest : rest.slice(0, stopIdx))
+        .map((l) => l.trim())
+        .filter((l) => /^[-*·]|^\d+[.、]|^\[ \]|^\[x\]/i.test(l))
+      if (seg.length === 0) continue
+      return seg
+        .map((l) => l.replace(/^[-*·]\s*|^\d+[.、]\s*/, '').replace(/^\[ \]\s*|^\[x\]\s*/i, '').trim())
+        .filter(Boolean)
+    }
+    return []
+  }, [rq.description, rq.docContent])
+  const generateFromAcceptance = async () => {
+    setSplitting(true)
+    setSplitMsg('')
+    try {
+      let n = 0
+      for (const item of acceptItems) {
+        await workItemsApi.create({
+          type: 'task',
+          title: item.slice(0, 100),
+          parentId: rq.id,
+          productId: rq.productId,
+          priority: 'P2',
+        })
+        n += 1
+      }
+      await queryClientDrawer.invalidateQueries({ queryKey: ['requirements'] })
+      await queryClientDrawer.invalidateQueries({ queryKey: ['tasks'] })
+      await queryClientDrawer.invalidateQueries({ queryKey: ['work-items'] })
+      await queryClientDrawer.invalidateQueries({ queryKey: ['backlog-pool'] })
+      setSplitOk(true)
+      setSplitMsg(`已按验收标准生成 ${n} 个拆解任务`)
+    } catch (e) {
+      setSplitOk(false)
+      setSplitMsg(e instanceof Error ? e.message : '生成失败')
+    } finally {
+      setSplitting(false)
+    }
+  }
   const queryClient = useQueryClient()
   const { user } = useAuth()
   const myId = user?.id
@@ -737,8 +790,17 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
         <div className="mt-4">
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[11px] font-semibold tracking-wide text-txt-low">拆解任务（{doneCount}/{linked.length} 完成）</span>
-            <Bar value={linked.length ? (doneCount / linked.length) * 100 : 0} tone="ok" className="w-24" />
+            <div className="flex items-center gap-2">
+              <span title={acceptItems.length === 0 ? 'PRD 正文中未找到「## 验收标准」列表项（- 开头行）' : `按验收标准逐条生成拆解任务（${acceptItems.length} 项）`}>
+                <Btn variant="ghost" disabled={splitting || acceptItems.length === 0}
+                  onClick={() => void generateFromAcceptance()}>
+                  <ListChecks size={12} />{splitting ? '生成中…' : `从验收标准生成任务（${acceptItems.length}）`}
+                </Btn>
+              </span>
+              <Bar value={linked.length ? (doneCount / linked.length) * 100 : 0} tone="ok" className="w-24" />
+            </div>
           </div>
+          {splitMsg && <div className={`mb-1.5 text-[11px] ${splitOk ? 'text-ok-deep' : 'text-bad-deep'}`}>{splitMsg}</div>}
           <div className="space-y-1">
             {linked.map((t) => (
               <button key={t.id} type="button" onClick={() => nav.go('tasks', t.id)} className="flex w-full cursor-pointer items-center gap-2 rounded-lg border border-line bg-canvas px-2 py-1.5 text-left text-xs hover:border-brand">

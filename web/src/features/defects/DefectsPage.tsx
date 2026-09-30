@@ -11,7 +11,7 @@ import { AlertTriangle, ArrowRight, FlaskConical, GitCommitHorizontal, GitPullRe
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Defect, DefectSeverity } from '../../data/types'
 import { defectStatusFlow, severityTone } from '../../data/store'
-import { defectsApi, useCommits, useComponents, useDefects, useGateChannel, useProducts, useReleases, useWorkItems } from '../../api/queries'
+import { defectsApi, requirementsApi, useCommits, useComponents, useDefects, useGateChannel, useProducts, useReleases, useWorkItems } from '../../api/queries'
 import type { DefectRow, RemoteRelease } from '../../api/queries'
 import { DefectFormModal } from './DefectForm'
 import { ApiError } from '../../api/client'
@@ -378,6 +378,37 @@ function DefectDrawer({ wid, nav, onClose, users, onTransition }: {
   const { data: remoteDefects = [] } = useDefects()
   const { data: remoteReleases = [] } = useReleases()
   const { data: workItemRows } = useWorkItems()
+  // ⑥t 缺陷转需求：一键沉淀为产品需求（草稿态进需求池）。hooks 须在 early-return 之前。
+  const queryClient = useQueryClient()
+  const [converting, setConverting] = useState(false)
+  const [convertMsg, setConvertMsg] = useState('')
+  const [convertOk, setConvertOk] = useState(false)
+  const convertToRequirement = async () => {
+    setConverting(true)
+    setConvertMsg('')
+    try {
+      const req = await requirementsApi.create({
+        title: `产品化：${remoteDefects.find((x) => x.id === wid)?.title ?? ''}`,
+        description: `来源：缺陷 ${remoteDefects.find((x) => x.id === wid)?.key ?? ''}
+
+原缺陷描述：${remoteDefects.find((x) => x.id === wid)?.description || '（无）'}
+
+（缺陷转需求：修复方案有跨客户复用价值时产品化沉淀，请补充通用化改造说明）`,
+        productId: remoteDefects.find((x) => x.id === wid)?.productId,
+        priority: 'P2',
+        origin: 'product',
+      })
+      await queryClient.invalidateQueries({ queryKey: ['requirements'] })
+      await queryClient.invalidateQueries({ queryKey: ['backlog-pool'] })
+      setConvertOk(true)
+      setConvertMsg(`已转需求 ${req.key}（草稿，可在需求池查看）`)
+    } catch (e2) {
+      setConvertOk(false)
+      setConvertMsg(e2 instanceof Error ? e2.message : '转需求失败')
+    } finally {
+      setConverting(false)
+    }
+  }
   const d = remoteDefects.find((x) => x.id === wid)
   if (!d) return null
   const flowIdx = defectStatusFlow.indexOf(d.status)
@@ -440,6 +471,14 @@ function DefectDrawer({ wid, nav, onClose, users, onTransition }: {
         </div>
 
         {d.description && <p className="mt-3 whitespace-pre-wrap text-xs leading-5 text-txt-mid">{d.description}</p>}
+
+        {/* ⑥t 缺陷转需求：修复方案有跨客户复用价值时产品化沉淀 */}
+        <div className="mt-3 flex items-center gap-2">
+          <Btn variant="ghost" disabled={converting} onClick={() => void convertToRequirement()}>
+            <ListChecks size={13} />{converting ? '转需求中…' : '转需求'}
+          </Btn>
+          {convertMsg && <span className={`text-[11px] ${convertOk ? 'text-ok-deep' : 'text-bad-deep'}`}>{convertMsg}</span>}
+        </div>
         {d.labels.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">{d.labels.map((l) => <span key={l} className="rounded bg-ink-700 px-1.5 py-px text-[11px] text-txt-mid">{l}</span>)}</div>
         )}

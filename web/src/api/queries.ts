@@ -195,11 +195,14 @@ export const workItemsApi = {
     roadmapItemId?: string
     dueDate?: string
     estimateHours?: number
+    /** ⑥t 验收标准分解：父工作项（需求→拆解任务；后端 productId 缺省时继承父产品） */
+    parentId?: string
   }): Promise<RemoteSprintWorkItem> {
     return api<RemoteSprintWorkItem>('/api/v1/work-items', {
       method: 'POST',
       body: {
         type: input.type,
+        parentId: input.parentId || undefined,
         title: input.title,
         description: input.description || undefined,
         priority: input.priority || undefined,
