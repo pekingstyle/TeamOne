@@ -127,6 +127,25 @@ public class GitCommandPort implements GitPort {
     }
 
     @Override
+    public AheadBehind aheadBehind(String repoKey, String fromRef, String toRef) {
+        requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
+        if (fromRef == null || fromRef.isBlank() || toRef == null || toRef.isBlank()) {
+            throw new BusinessException(ErrorCode.PLT_4000, "fromRef/toRef 不能为空");
+        }
+        String a = fromRef.trim();
+        String b = toRef.trim();
+        validateRef(a);
+        validateRef(b);
+        String gitDir = resolveGitDir(repoKey);
+        // ahead=fromRef 独有（客制领先量）= rev-list --count toRef..fromRef；behind 反向（产品待升级量）
+        int ahead = Integer.parseInt(exec(List.of("git", "--git-dir", gitDir,
+                "rev-list", "--count", b + ".." + a), repoKey).trim());
+        int behind = Integer.parseInt(exec(List.of("git", "--git-dir", gitDir,
+                "rev-list", "--count", a + ".." + b), repoKey).trim());
+        return new AheadBehind(ahead, behind);
+    }
+
+    @Override
     public boolean isAncestor(String repoKey, String ancestorRef, String descendantRef) {
         requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
         if (ancestorRef == null || ancestorRef.isBlank() || descendantRef == null || descendantRef.isBlank()) {
@@ -326,6 +345,12 @@ public class GitCommandPort implements GitPort {
 
     @Override
     public String merge(String repoKey, String target, String source, String message, String authorName, String authorEmail) {
+        return merge(repoKey, target, source, message, authorName, authorEmail, false);
+    }
+
+    @Override
+    public String merge(String repoKey, String target, String source, String message,
+                        String authorName, String authorEmail, boolean allowDivergedTarget) {
         requireMatch(REPO_KEY_PATTERN, repoKey, "repoKey");
         String cleanTarget = (target == null || target.isBlank()) ? "main" : target.trim();
         String cleanSource = (source == null || source.isBlank()) ? "main" : source.trim();
@@ -337,7 +362,7 @@ public class GitCommandPort implements GitPort {
         if (!check.canMerge()) {
             throw new BusinessException(ErrorCode.ENG_4251, "存在未解决冲突，无法自动合并: " + check.conflictFiles());
         }
-        if (check.rebaseRequired()) {
+        if (check.rebaseRequired() && !allowDivergedTarget) {
             throw new BusinessException(ErrorCode.ENG_4252, "源分支落后目标分支，请先完成 rebase");
         }
 

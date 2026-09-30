@@ -57,6 +57,10 @@ public class Project {
     @Column(nullable = false)
     private int version;
 
+    /** ⑥r 交付分支（project/*；NULL=交付未工程化） */
+    @Column(name = "branch_name")
+    private String branchName;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt = Instant.now();
 
@@ -79,6 +83,9 @@ public class Project {
     public LocalDate getPlanAcceptDate() { return planAcceptDate; }
     public void setPlanAcceptDate(LocalDate v) { this.planAcceptDate = v; }
     public int getVersion() { return version; }
+    public String getBranchName() { return branchName; }
+    public void setBranchName(String v) { this.branchName = v; }
+
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant v) { this.updatedAt = v; }

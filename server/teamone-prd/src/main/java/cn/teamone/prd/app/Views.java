@@ -120,6 +120,7 @@ public final class Views {
         m.put("managerId", p.getManagerId());
         m.put("startDate", p.getStartDate() == null ? null : p.getStartDate().format(DATE));
         m.put("planAcceptDate", p.getPlanAcceptDate() == null ? null : p.getPlanAcceptDate().format(DATE));
+        m.put("branchName", p.getBranchName());
         m.put("version", p.getVersion());
         m.put("createdAt", p.getCreatedAt());
         m.put("updatedAt", p.getUpdatedAt());

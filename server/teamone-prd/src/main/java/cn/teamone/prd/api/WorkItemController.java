@@ -4,6 +4,7 @@ import cn.teamone.prd.app.Refs;
 import cn.teamone.prd.app.RequirementService;
 import cn.teamone.prd.app.TransitionService;
 import cn.teamone.prd.app.Views;
+import cn.teamone.prd.app.BacklogService;
 import cn.teamone.prd.app.WorkItemService;
 import cn.teamone.platform.infra.IdempotencyService;
 import cn.teamone.shared.api.BusinessException;
@@ -43,16 +44,44 @@ public class WorkItemController {
     private final IdempotencyService idempotency;
     private final Refs refs;
     private final ObjectMapper om;
+    private final BacklogService backlog;
 
     public WorkItemController(WorkItemService workItems, RequirementService requirements,
                               TransitionService transitions, IdempotencyService idempotency,
-                              Refs refs, ObjectMapper om) {
+                              Refs refs, ObjectMapper om, BacklogService backlog) {
         this.workItems = workItems;
         this.requirements = requirements;
         this.transitions = transitions;
         this.idempotency = idempotency;
         this.refs = refs;
         this.om = om;
+        this.backlog = backlog;
+    }
+
+    /**
+     * 需求池（⑥s · docs/v2/16 §2.2 打分 v2）：待排期需求按可解释分数降序——
+     * 优先级/战略对齐/客户信号/时效/就绪度（blocks 依赖感知）/执行热度/任务紧急度。
+     */
+    @GetMapping("/pool")
+    public List<Map<String, Object>> pool(@RequestParam(required = false) String productId) {
+        Actor.require();
+        return backlog.pool(productId);
+    }
+
+    /** 建立 work_item_link（⑥s：blocks=前置阻塞等；自链/重复 4xx） */
+    @PostMapping("/{idOrKey}/links")
+    public Map<String, Object> addLink(@PathVariable String idOrKey,
+            @RequestBody Map<String, Object> body) {
+        UUID actor = Actor.require();
+        return workItems.addLink(idOrKey,
+                (String) body.get("toKey"), (String) body.get("relation"), actor);
+    }
+
+    /** 依赖清单（⑥s：双向，含对方 key/title/status/done） */
+    @GetMapping("/{idOrKey}/links")
+    public List<Map<String, Object>> linksOf(@PathVariable String idOrKey) {
+        Actor.require();
+        return workItems.linksOf(idOrKey);
     }
 
     // ==================== CRUD ====================

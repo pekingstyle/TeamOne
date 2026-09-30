@@ -3053,6 +3053,71 @@ export function useDepartments() {
   })
 }
 
+// ---------------- 需求池（⑥s · docs/v2/16 §2.2 打分 v2：依赖感知 + 执行侧信号，可解释排序） ----------------
+
+/** 池行 breakdown（分项得分，tooltip 拆解；口径固定不开放配置） */
+export interface BacklogBreakdown {
+  priority: number
+  goal: number
+  customer: number
+  age: number
+  ready: number
+  heat: number
+  taskUrgency: number
+}
+
+/** 需求池行：score=分项之和；blockedBy 非空=被未完结前置阻塞（分组沉底） */
+export interface BacklogRow {
+  id: string
+  key: string
+  title: string
+  status: string
+  priority?: string | null
+  storyPoints?: number | null
+  origin?: 'product' | 'project_custom'
+  promotedToId?: string
+  goalId?: string
+  productId: string
+  score: number
+  breakdown: BacklogBreakdown
+  blockedBy: string[]
+  blocksCount: number
+  taskStats: { total: number; open: number; done: number }
+  suggestsSplit: boolean
+}
+
+/** GET /work-items/pool?productId=（登录态；draft/pending_review/accepted 入池） */
+export function useBacklogPool(productId?: string) {
+  return useQuery({
+    queryKey: ['backlog-pool', productId ?? 'all'],
+    queryFn: () => api<BacklogRow[]>(`/api/v1/work-items/pool${productId ? `?productId=${encodeURIComponent(productId)}` : ''}`),
+  })
+}
+
+/** POST /work-items/{idOrKey}/links（⑥s 依赖管理：blocks=前置阻塞等） */
+export async function addWorkItemLink(idOrKey: string, toKey: string, relation: string): Promise<unknown> {
+  return api(`/api/v1/work-items/${encodeURIComponent(idOrKey)}/links`, { method: 'POST', body: { toKey, relation } })
+}
+
+/** GET /work-items/{idOrKey}/links（双向依赖清单） */
+export interface WorkItemLinkRow {
+  id: string
+  relation: string
+  direction: 'in' | 'out'
+  otherKey: string
+  otherTitle: string
+  otherStatus: string
+  otherDone: boolean
+}
+
+export function useWorkItemLinks(idOrKey?: string) {
+  return useQuery({
+    queryKey: ['work-item-links', idOrKey],
+    queryFn: () => api<WorkItemLinkRow[]>(`/api/v1/work-items/${encodeURIComponent(idOrKey!)}/links`),
+    enabled: !!idOrKey,
+  })
+}
+
 // ---------------- 升级冲突预警（⑥p · docs/v2/15 §9：客制组件集 ∩ 产品演进组件集） ----------------
 
 /** 预警项：一个重叠组件（red=产品 in_dev 撞线 / yellow=已动过需回归） */
@@ -3069,6 +3134,51 @@ export interface UpgradeWarnings {
   redCount: number
   yellowCount: number
   items: UpgradeWarningItem[]
+}
+
+// ---------------- 项目交付分支（⑥r · docs/v2/16 §1：客制化走 project/* 交付分支，升级=MR release→project） ----------------
+
+/** 升级记录（status 由后端惰性同步 MR 实际状态） */
+export interface ProjectUpgradeRow {
+  id: string
+  mrId: string
+  fromRef: string
+  status: 'requested' | 'merged' | 'closed'
+  createdAt: string
+}
+
+/** 分支状态聚合（单次拉取：绑定信息 + ahead/behind + 升级记录） */
+export interface ProjectBranchStatus {
+  repoName: string
+  defaultBranch: string
+  branchName?: string | null
+  exists?: boolean
+  ahead?: number
+  behind?: number
+  upgrades: ProjectUpgradeRow[]
+}
+
+export const projectBranchApi = {
+  /** PUT /projects/{id}/branch：绑定交付分支（校验产品已绑仓库+分支存在） */
+  bind(id: string, name: string): Promise<ProjectBranchStatus> {
+    return api<ProjectBranchStatus>(`/api/v1/projects/${encodeURIComponent(id)}/branch`, { method: 'PUT', body: { name } })
+  },
+  /** DELETE /projects/{id}/branch：解绑 */
+  unbind(id: string): Promise<ProjectBranchStatus> {
+    return api<ProjectBranchStatus>(`/api/v1/projects/${encodeURIComponent(id)}/branch`, { method: 'DELETE' })
+  },
+  /** POST /projects/{id}/branch/upgrades：发起升级 MR（fromRef → 交付分支），走既有评审/门禁 */
+  requestUpgrade(id: string, fromRef: string): Promise<{ mrId: string; mrNumber: number; fromRef: string; targetBranch: string }> {
+    return api(`/api/v1/projects/${encodeURIComponent(id)}/branch/upgrades`, { method: 'POST', body: { fromRef } })
+  },
+}
+
+export function useProjectBranch(id: string | undefined) {
+  return useQuery({
+    queryKey: ['project-branch', id],
+    queryFn: () => api<ProjectBranchStatus>(`/api/v1/projects/${encodeURIComponent(id!)}/branch`),
+    enabled: !!id,
+  })
 }
 
 /** GET /api/v1/projects/{id}/upgrade-warnings（登录态；客制需求未挂组件时集合为空 → 无预警） */

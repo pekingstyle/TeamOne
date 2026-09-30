@@ -202,9 +202,9 @@ class BranchRuleServiceTest {
     // ---------- GitFlow 模板种子（Seeder 幂等性支撑） ----------
 
     @Test
-    void gitFlowTemplate_sevenRules_pocAllowsDirectPush() {
+    void gitFlowTemplate_eightRules_pocAllowsDirectPush() {
         List<BranchRule> tpl = cn.teamone.eng.seed.BranchRuleSeeder.gitFlowTemplate(UUID.randomUUID(), Instant.now());
-        assertEquals(7, tpl.size());
+        assertEquals(8, tpl.size());
         BranchRule poc = tpl.stream().filter(r -> "poc".equals(r.getBranchType())).findFirst().orElseThrow();
         assertTrue(poc.isAllowDirectPush());
         assertNull(poc.getMergeTarget());

@@ -58,6 +58,14 @@ public interface GitPort {
      */
     void deleteBranch(String repoKey, String name);
 
+    /** 双向计数（⑥r）：ahead=fromRef 有而 toRef 无的提交数，behind=toRef 有而 fromRef 无（待升级量） */
+    record AheadBehind(int ahead, int behind) {}
+
+    /**
+     * 分支领先/落后计数（⑥r 项目交付分支视图：{@code git rev-list --count A..B} 双向）。
+     */
+    AheadBehind aheadBehind(String repoKey, String fromRef, String toRef);
+
     /**
      * 判定 ancestorRef 是否为 descendantRef 的祖先（⑥p 分支快进前置校验：
      * {@code git merge-base --is-ancestor}，退出码 0=是 / 1=否）。
@@ -163,6 +171,14 @@ public interface GitPort {
      * @return 生成的新合并提交 Commit SHA
      */
     String merge(String repoKey, String target, String source, String message, String authorName, String authorEmail);
+
+    /**
+     * 同 {@link #merge(String, String, String, String, String, String)}，但允许目标分支
+     * 含源分支没有的提交（⑥r 升级 MR：交付分支 project/* 天然领先于产品侧源分支，
+     * 三路合并正确性由 merge-tree 冲突检查承担）。
+     */
+    String merge(String repoKey, String target, String source, String message,
+                 String authorName, String authorEmail, boolean allowDivergedTarget);
 
     /**
      * 创建带签名的附注标签（Annotated Tag）并冻结基线（U10）。

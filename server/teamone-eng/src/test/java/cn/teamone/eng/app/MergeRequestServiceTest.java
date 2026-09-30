@@ -215,7 +215,8 @@ class MergeRequestServiceTest {
         when(reviewerRepo.findByMrId(mr.getId())).thenReturn(List.of(r));
         when(checkRepo.findByMrId(mr.getId())).thenReturn(List.<MergeCheck>of());
         when(repositoryRepo.findById(mr.getRepoId())).thenReturn(Optional.of(repo()));
-        when(gitPort.merge(anyString(), anyString(), anyString(), anyString(), anyString(), anyString()))
+        // ⑥r：merge 增 allowDivergedTarget 尾参（升级 MR 豁免 rebase 守卫）
+        when(gitPort.merge(anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), anyBoolean()))
                 .thenReturn(SHA);
     }
 

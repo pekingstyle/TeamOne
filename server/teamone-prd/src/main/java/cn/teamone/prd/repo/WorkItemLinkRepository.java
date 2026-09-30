@@ -12,4 +12,7 @@ public interface WorkItemLinkRepository extends JpaRepository<WorkItemLink, UUID
     List<WorkItemLink> findByFromItemId(UUID fromItemId);
 
     List<WorkItemLink> findByToItemId(UUID toItemId);
+
+    /** ⑥s 查重（V4 UNIQUE(from,to,relation) 的友好 422 预判） */
+    List<WorkItemLink> findByFromItemIdAndToItemIdAndRelation(UUID fromItemId, UUID toItemId, String relation);
 }

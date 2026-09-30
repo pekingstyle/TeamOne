@@ -561,6 +561,71 @@ public class WorkItemService {
         wi.setOrigin(origin);
     }
 
+    // ==================== ⑥s 依赖管理（前置/后置） ====================
+
+    private static final List<String> LINK_RELATIONS = List.of("discovered_in", "relates_to", "fixed_by", "blocks", "promoted_from");
+
+    /** 建立依赖/关联（⑥s：blocks=from 阻塞 to；自链/非法关系/重复 → 400/422） */
+    @Transactional
+    public Map<String, Object> addLink(String fromIdOrKey, String toKey, String relation, UUID actorId) {
+        if (relation == null || !LINK_RELATIONS.contains(relation)) {
+            throw new BusinessException(ErrorCode.PLT_4000, "relation 非法（discovered_in/relates_to/fixed_by/blocks/promoted_from）: " + relation);
+        }
+        WorkItem from = refs.workItem(fromIdOrKey);
+        WorkItem to = refs.workItem(toKey);
+        // QA MUST-FIX：写端点资源级鉴权对齐全仓模式（product:edit）
+        permissions.require(actorId, "product", from.getProductId(), "edit");
+        if (from.getId().equals(to.getId())) {
+            throw new BusinessException(ErrorCode.PLT_4000, "不能对自身建立依赖");
+        }
+        boolean dup = !links.findByFromItemIdAndToItemIdAndRelation(from.getId(), to.getId(), relation).isEmpty();
+        if (dup) {
+            throw new BusinessException(ErrorCode.PRD_4201, "依赖关系已存在");
+        }
+        WorkItemLink link = new WorkItemLink();
+        link.setFromItemId(from.getId());
+        link.setToItemId(to.getId());
+        link.setRelation(relation);
+        links.save(link);
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("id", link.getId());
+        res.put("fromKey", from.getKey());
+        res.put("toKey", to.getKey());
+        res.put("relation", relation);
+        return res;
+    }
+
+    /** 依赖清单（双向； counterparts 携 key/title/status 供前端渲染前置/后置区） */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> linksOf(String idOrKey) {
+        WorkItem self = refs.workItem(idOrKey);
+        List<Map<String, Object>> res = new ArrayList<>();
+        for (WorkItemLink l : links.findByFromItemId(self.getId())) {
+            linksRow(res, self, l, true);
+        }
+        for (WorkItemLink l : links.findByToItemId(self.getId())) {
+            linksRow(res, self, l, false);
+        }
+        return res;
+    }
+
+    private void linksRow(List<Map<String, Object>> res, WorkItem self, WorkItemLink l, boolean outgoing) {
+        UUID otherId = outgoing ? l.getToItemId() : l.getFromItemId();
+        WorkItem other = workItems.findById(otherId).orElse(null);
+        if (other == null) {
+            return;
+        }
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", l.getId());
+        row.put("relation", l.getRelation());
+        row.put("direction", outgoing ? "out" : "in");
+        row.put("otherKey", other.getKey());
+        row.put("otherTitle", other.getTitle());
+        row.put("otherStatus", other.getStatus());
+        row.put("otherDone", WorkItem.doneStatusesOf(other.getType()).contains(other.getStatus()));
+        res.add(row);
+    }
+
     /** 来源项目解析（uuid 且必须存在；缺省/不存在 → 400） */
     private UUID resolveSourceProject(String sourceProjectId) {
         if (sourceProjectId == null || sourceProjectId.isBlank()) {

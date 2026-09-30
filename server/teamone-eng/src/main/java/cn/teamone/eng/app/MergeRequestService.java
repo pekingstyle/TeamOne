@@ -608,6 +608,14 @@ public class MergeRequestService {
                     throw new BusinessException(ErrorCode.ENG_4251, "存在未解决冲突，暂不可合并");
                 }
                 if ("rebase".equals(c.getKind())) {
+                    // ⑥r 升级例外（docs/v2/16 §1）：交付分支（project/*）天然领先于产品侧源分支
+                    // （客制提交不在 release/main 上），「target 不是 source 祖先」是升级 MR 的常态
+                    // 而非落后——三路合并正确性已由 merge-tree 冲突检查承担，此处豁免 rebase 要求。
+                    boolean upgradeMr = mr.getTargetBranch() != null
+                            && mr.getTargetBranch().startsWith("project/");
+                    if (upgradeMr) {
+                        continue;
+                    }
                     throw new BusinessException(ErrorCode.ENG_4252, "源分支落后目标分支，需先完成 rebase");
                 }
                 throw new BusinessException(ErrorCode.PLT_4000, "检查项未通过: " + c.getName());
@@ -616,7 +624,9 @@ public class MergeRequestService {
 
         // 3. 原生 Git 服务端合并
         String commitMsg = "Merge MR !" + mr.getMrNumber() + ": " + mr.getTitle();
-        String commitSha = gitPort.merge(repo.getRepoPath(), mr.getTargetBranch(), mr.getSourceBranch(), commitMsg, "TeamOne", "teamone@teamone.cn");
+        // ⑥r：升级 MR（目标为 project/* 交付分支）允许目标分叉（客制提交天然不在产品侧源分支上）
+        boolean upgradeMr = mr.getTargetBranch() != null && mr.getTargetBranch().startsWith("project/");
+        String commitSha = gitPort.merge(repo.getRepoPath(), mr.getTargetBranch(), mr.getSourceBranch(), commitMsg, "TeamOne", "teamone@teamone.cn", upgradeMr);
 
         // 4. 状态置为 merged
         mr.setStatus("merged");

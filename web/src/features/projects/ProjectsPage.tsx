@@ -3,10 +3,10 @@
 // 口径：客制化率 = 客制化需求 / 产品全部工作项（客制占产品账本比例）；回流率 = 已回流 / 客制化（rate 均为 0~1 小数）。
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Building2, CalendarRange, Package, Plus, RefreshCcw, X } from 'lucide-react'
+import { AlertTriangle, Building2, CalendarRange, GitBranch, Package, Plus, RefreshCcw, X } from 'lucide-react'
 import type { PageProps } from '../../nav'
 import {
-  projectsApi, useProducts, useProject, useProjects, useUpgradeWarnings, workItemsApi,
+  projectBranchApi, projectsApi, useProducts, useProject, useProjectBranch, useProjects, useRepoBranches, useUpgradeWarnings, workItemsApi,
   type RemoteProject, type RemoteProjectItem,
 } from '../../api/queries'
 import { toBrief, useUserBriefs } from '../../api/users'
@@ -139,10 +139,16 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
   const queryClient = useQueryClient()
   const projQ = useProject(id)
   const warnQ = useUpgradeWarnings(id)
+  const branchQ = useProjectBranch(id)
+  const { data: repoBranches } = useRepoBranches(branchQ.data?.repoName)
   const { data: briefRows } = useUserBriefs()
   const briefs = toBrief(briefRows)
   const [busyKey, setBusyKey] = useState<string | undefined>()
   const [err, setErr] = useState('')
+  // ⑥r 交付分支：绑定下拉 / 升级 fromRef 选择 / 操作忙态
+  const [bindName, setBindName] = useState('')
+  const [upgradeFrom, setUpgradeFrom] = useState('')
+  const [branchBusy, setBranchBusy] = useState(false)
 
   const p = projQ.data
   // 详情 items 契约为该项目的客制化需求视图；此处再按 origin 防御过滤
@@ -165,6 +171,33 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
       onToast({ ok: false, text: msg })
     } finally {
       setBusyKey(undefined)
+    }
+  }
+
+  /** ⑥r：绑定/解绑/升级（统一失效 project-branch + projects + mrs） */
+  const branchAction = async (action: 'bind' | 'unbind' | 'upgrade') => {
+    setBranchBusy(true)
+    setErr('')
+    try {
+      if (action === 'bind') {
+        await projectBranchApi.bind(id, bindName)
+        onToast({ ok: true, text: `交付分支已绑定：${bindName}` })
+      } else if (action === 'unbind') {
+        await projectBranchApi.unbind(id)
+        onToast({ ok: true, text: '交付分支已解绑' })
+      } else {
+        const res = await projectBranchApi.requestUpgrade(id, upgradeFrom)
+        onToast({ ok: true, text: `升级 MR !${res.mrNumber} 已发起（${res.fromRef} → ${res.targetBranch}），走评审门禁` })
+      }
+      await queryClient.invalidateQueries({ queryKey: ['project-branch', id] })
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      await queryClient.invalidateQueries({ queryKey: ['mrs'] })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '操作失败'
+      setErr(msg)
+      onToast({ ok: false, text: msg })
+    } finally {
+      setBranchBusy(false)
     }
   }
 
@@ -206,6 +239,67 @@ function ProjectDrawer({ id, nav, onClose, onToast }: {
               <span className="font-semibold text-txt-hi">双轮汇总</span>
               <span title={`客制 ${p.customTotal}/${totalOf(p)} 项`}>客制化 <strong className="tabular-nums text-cat-teal">{pct(p.customRate)}</strong>（客制 {p.customTotal}/{totalOf(p)} 项）</span>
               <span title={`已回流 ${p.promotedTotal}/${p.customTotal} 项`}>回流 <strong className="tabular-nums text-brand">{pct(p.promoteRate)}</strong>（已回流 {p.promotedTotal}/{p.customTotal} 项）</span>
+            </div>
+
+            {/* 交付分支（⑥r · docs/v2/16 §1）：绑定 / ahead-behind / 发起升级 MR / 升级记录 */}
+            <div className="mt-4">
+              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-txt-low"
+                title="交付分支 = 客户实例的工程线（project/*，基于产品 main 拉出）：客制化经 feature/* MR 合入；升级 = MR release/* → 交付分支。ahead=客制领先产品基线的提交数，behind=产品待升级提交数。">
+                <GitBranch size={11} /> 交付分支
+              </div>
+              {branchQ.data && !branchQ.data.branchName ? (
+                <div className="space-y-2 rounded-lg border border-dashed border-line bg-canvas/60 p-3">
+                  <div className="text-xs text-txt-low">
+                    尚未绑定交付分支——在仓库建一条 <span className="font-mono">project/*</span> 分支（基于产品默认分支）后绑定，客制化与升级即可在该分支上管理。
+                  </div>
+                  <div className="flex gap-2">
+                    <select value={bindName} onChange={(e) => setBindName(e.target.value)} className="flex-1 rounded-input border border-line bg-canvas px-2 py-1.5 text-xs text-txt-hi">
+                      <option value="">选择分支…</option>
+                      {(repoBranches ?? []).filter((b) => b.name.startsWith('project/')).map((b) => (
+                        <option key={b.name} value={b.name}>{b.name}</option>
+                      ))}
+                    </select>
+                    <Btn variant="default" disabled={branchBusy || !bindName} onClick={() => void branchAction('bind')}>绑定</Btn>
+                  </div>
+                </div>
+              ) : branchQ.data ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-line bg-canvas px-3 py-2 text-xs">
+                    <span className="font-mono font-semibold text-txt-hi">{branchQ.data.branchName}</span>
+                    {branchQ.data.exists === false && <Pill tone="bad">分支已不存在</Pill>}
+                    <span title="客制领先产品基线（默认分支）的提交数">ahead <strong className="tabular-nums text-cat-teal">{branchQ.data.ahead ?? '—'}</strong></span>
+                    <span title="产品基线待升级进交付分支的提交数">behind <strong className="tabular-nums text-warn-deep">{branchQ.data.behind ?? '—'}</strong></span>
+                    <span className="flex-1" />
+                    <select value={upgradeFrom} onChange={(e) => setUpgradeFrom(e.target.value)}
+                      className="rounded-input border border-line bg-canvas px-2 py-1 text-xs text-txt-hi"
+                      title="选择产品侧来源（release/* 或默认分支）">
+                      <option value="">升级自…</option>
+                      {(repoBranches ?? [])
+                        .filter((b) => b.name === branchQ.data!.defaultBranch || b.name.startsWith('release/'))
+                        .map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </select>
+                    <Btn variant="default" disabled={branchBusy || !upgradeFrom} onClick={() => void branchAction('upgrade')}>
+                      <RefreshCcw size={12} />发起升级 MR
+                    </Btn>
+                    <Btn variant="ghost" disabled={branchBusy} onClick={() => void branchAction('unbind')}>解绑</Btn>
+                  </div>
+                  {(branchQ.data.upgrades ?? []).length > 0 && (
+                    <div className="space-y-1">
+                      {(branchQ.data.upgrades ?? []).map((u) => (
+                        <div key={u.id} className="flex items-center gap-2 rounded-lg border border-line bg-canvas px-2.5 py-1.5 text-xs">
+                          <Pill tone={u.status === 'merged' ? 'ok' : u.status === 'requested' ? 'warn' : 'neutral'}>
+                            {u.status === 'merged' ? '已合入' : u.status === 'requested' ? '进行中' : '已关闭'}
+                          </Pill>
+                          <span className="text-txt-mid">{u.fromRef} → {branchQ.data!.branchName}</span>
+                          <span className="ml-auto text-txt-low">{(u.createdAt ?? '').slice(0, 10)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-line bg-canvas/60 p-3 text-xs text-txt-low">分支状态加载中…</div>
+              )}
             </div>
 
             {/* 升级冲突预警（⑥p · docs/v2/15 §9）：客制组件集 ∩ 产品演进组件集 */}

@@ -4,17 +4,17 @@
 //   * 评审人：提交评审时多选（POST /submit reviewerIds，round+1 驳回重提）；
 //   * 评审记录：GET /work-items/{key}/review-rounds 按轮次分组（round/评审人/结果/意见/时间/结论），无 store 兜底；
 //   * 纪要：platform.file 两步制上传（POST/PUT /review-rounds/{round}/minutes），查看走既有下载通道。
-import { Fragment, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Check, ChevronDown, ChevronRight, Eye, FileCode, FileText, Hash, Paperclip, Plus, RefreshCcw, Upload, X } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { PageProps } from '../../nav'
 import type { ReqStatus, Requirement } from '../../data/types'
-import { useComponents,
+import { useBacklogPool, useComponents,
   filesApi, parseFieldError, remoteToRequirement, requirementsApi,
   useConversations, useGoals, useProducts, useProjects, useRequirementReviewRounds, useRequirementReviews,
   useRequirements, useReleases, useRoadmapItems, useSprints, useWorkItems, workItemsApi,
 } from '../../api/queries'
-import type { RemoteRequirementRound } from '../../api/queries'
+import type { BacklogBreakdown, RemoteRequirementRound } from '../../api/queries'
 import { useAuth } from '../../api/AuthContext'
 import { toBrief, useUserBriefs } from '../../api/users'
 import { Avatar, Bar, Btn, Card, Empty, PageHeader, Pill, PriorityBadge, Spinner } from '../../components/ui'
@@ -32,8 +32,10 @@ const FLOW: ReqStatus[] = ['draft', 'pending_review', 'accepted', 'in_dev', 'del
 const inputCls = 'w-full rounded-input border border-line bg-canvas px-2.5 py-1.5 text-sm text-txt-hi outline-none placeholder:text-txt-low/70 focus:border-brand'
 
 export default function RequirementsPage({ nav, id }: PageProps) {
-  const [view, setView] = useState<'list' | 'board'>('list')
+  const [view, setView] = useState<'list' | 'board' | 'pool'>('list')
   const [openId, setOpenId] = useState<string | undefined>(id)
+  // QA MUST-FIX：本页内不重挂载，id prop 变化（池行/列表跳转）须同步打开抽屉（同 Defects/TasksPage 模式）
+  useEffect(() => { if (id) setOpenId(id) }, [id])
   const [showNew, setShowNew] = useState(false)
   const [fStatus, setFStatus] = useState<'all' | ReqStatus>('all')
   const [fProduct, setFProduct] = useState<'all' | string>('all')
@@ -150,7 +152,7 @@ export default function RequirementsPage({ nav, id }: PageProps) {
           <option value="project_custom">客制化</option>
         </select>
         <div className="flex items-center rounded-full border border-line bg-card p-1">
-          {([['list', '列表'], ['board', '看板']] as const).map(([k, label]) => (
+          {([['list', '列表'], ['board', '看板'], ['pool', '需求池']] as const).map(([k, label]) => (
             <button key={k} type="button" onClick={() => setView(k)}
               className={`cursor-pointer rounded-full px-3 py-1 text-xs font-semibold ${view === k ? 'bg-brand text-white' : 'text-txt-mid hover:text-txt-hi'}`}>{label}</button>
           ))}
@@ -324,6 +326,9 @@ export default function RequirementsPage({ nav, id }: PageProps) {
           })}
         </div>
       )}
+
+      {/* 需求池（⑥s · docs/v2/16 §2.2 打分 v2）：待排期需求按可解释分数降序；可开工组在前、被阻塞组沉底 */}
+      {view === 'pool' && <BacklogPool productId={fProduct === 'all' ? undefined : fProduct} nav={nav} />}
 
       {/* 过滤条件为空时的兜底 */}
       {view === 'list' && fProduct !== 'all' && list.length === 0 && (
@@ -1296,6 +1301,89 @@ function RejectedReviewBlock({ r }: { r: Requirement }) {
       ) : (
         <div className="text-xs text-txt-low">暂无驳回记录</div>
       )}
+    </div>
+  )
+}
+
+// ==================== 需求池视图（⑥s · docs/v2/16 §2.2 打分 v2） ====================
+/** 分项得分中文说明（与后端 BacklogService 权重一一对应） */
+const BD_LABEL: Record<keyof BacklogBreakdown, string> = {
+  priority: '优先级（P0=40/P1=32/P2=24/P3=16）',
+  goal: '战略对齐（挂目标 +20）',
+  customer: '客户信号（客制化 +15；已回流 +10）',
+  age: '时效（每滞留 7 天 +1，封顶 10）',
+  ready: '就绪度（无阻塞 +15 / 被阻塞 −25）',
+  heat: '执行热度（子任务已开工 +10；被阻塞时不计）',
+  taskUrgency: '任务紧急度（开放子任务 P0 +10 / P1 +6；被阻塞时不计）',
+}
+
+const POOL_STATUS: Record<string, { label: string; tone: 'neutral' | 'warn' | 'brand' }> = {
+  draft: { label: '草稿', tone: 'neutral' },
+  pending_review: { label: '待评审', tone: 'warn' },
+  accepted: { label: '已受理', tone: 'brand' },
+}
+
+function BacklogPool({ productId, nav }: { productId?: string; nav: PageProps['nav'] }) {
+  const { data: rows, isLoading } = useBacklogPool(productId)
+  if (isLoading) return <div className="py-10 text-center text-sm text-txt-low">需求池计算中…</div>
+  if (!rows || rows.length === 0) {
+    return (
+      <Card className="py-10 text-center text-sm text-txt-low">
+        需求池为空——新建需求（草稿/待评审/已受理）自动入池，客制化需求回流后也会进入产品 backlog。
+      </Card>
+    )
+  }
+  const readyRows = rows.filter((r) => r.blockedBy.length === 0)
+  const blockedRows = rows.filter((r) => r.blockedBy.length > 0)
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-line bg-card px-4 py-2.5 text-[11px] leading-4 text-txt-low">
+        <span className="font-semibold text-txt-mid">排序口径（v2，可解释）：</span>
+        优先级 + 战略对齐 + 客户信号 + 时效 + 就绪度（无未完结前置阻塞 +15 / 被阻塞 −25 并沉底）
+        + 执行热度（子任务已开工 +10）+ 任务紧急度（开放子任务 P0/P1 加分）；
+        storyPoints ≥ 13 仅标记「建议分解」。鼠标悬停分值可看每项得分。
+      </div>
+      {[
+        { title: `可开工（${readyRows.length}）`, rows: readyRows },
+        { title: `被阻塞（${blockedRows.length}）——先清障，排前也是白排`, rows: blockedRows },
+      ].map((group) => group.rows.length === 0 ? null : (
+        <div key={group.title}>
+          <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-txt-low">{group.title}</div>
+          <div className="space-y-1.5">
+            {group.rows.map((r) => (
+              <div key={r.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
+                r.blockedBy.length > 0 ? 'border-warn/40 bg-warn/5' : 'border-line bg-card'
+              }`}>
+                <span
+                  className="w-10 shrink-0 rounded bg-brand-bg px-1 py-0.5 text-center font-mono text-[13px] font-bold text-brand"
+                  title={Object.entries(r.breakdown).map(([k, v]) => `${BD_LABEL[k as keyof BacklogBreakdown]} = ${v}`).join('\n')}
+                >{r.score}</span>
+                <button type="button" onClick={() => nav.go('requirements', r.id)}
+                  className="cursor-pointer font-mono font-bold text-cat-purple hover:underline">{r.key}</button>
+                <span className="min-w-0 flex-1 truncate text-txt-hi" title={r.title}>{r.title}</span>
+                {r.priority && <Pill tone={r.priority === 'P0' ? 'bad' : r.priority === 'P1' ? 'warn' : 'neutral'}>{r.priority}</Pill>}
+                <Pill tone={POOL_STATUS[r.status]?.tone ?? 'neutral'}>{POOL_STATUS[r.status]?.label ?? r.status}</Pill>
+                {r.origin === 'project_custom' && <Pill tone="teal">客制化</Pill>}
+                {r.promotedToId && <Pill tone="ok">已回流</Pill>}
+                {r.blockedBy.length > 0 && (
+                  <span className="text-warn-deep" title={`被 ${r.blockedBy.join('、')} 阻塞（未完结）`}>
+                    ⛔ 被 {r.blockedBy.join('、')} 阻塞
+                  </span>
+                )}
+                {r.blocksCount > 0 && (
+                  <span className="text-txt-low" title={`阻塞着 ${r.blocksCount} 个需求——先做完它可解锁后者`}>
+                    解锁 {r.blocksCount}
+                  </span>
+                )}
+                {r.suggestsSplit && <Pill tone="purple">建议分解</Pill>}
+                <span className="shrink-0 text-txt-low" title={`子任务：${r.taskStats.done}/${r.taskStats.total} 完成`}>
+                  任务 {r.taskStats.done}/{r.taskStats.total}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

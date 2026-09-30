@@ -48,8 +48,21 @@ public class BranchRuleSeeder implements ApplicationRunner {
             for (BranchRule rule : gitFlowTemplate(repo.getId(), now)) {
                 branchRuleRepo.save(rule);
             }
-            log.info("[branch-rule-seed] 仓库 {} 零分支规则，已按 GitFlow 模板补默认规则（7 条）",
+            log.info("[branch-rule-seed] 仓库 {} 零分支规则，已按 GitFlow 模板补默认规则（8 条）",
                     repo.getRepoPath());
+        }
+        // ⑥r：历史规则仓库幂等补 project/*（交付分支类型——既有仓库升级后没有该类型，
+        // 零规则模板分支覆盖不到它们；单独兜底，存在即跳过）
+        for (Repository repo : repositoryRepo.findAll()) {
+            boolean hasProject = branchRuleRepo.findByRepoId(repo.getId()).stream()
+                    .anyMatch(r -> "project".equals(r.getBranchType())
+                            || "project/*".equals(r.getNamePattern()));
+            if (!hasProject) {
+                branchRuleRepo.save(rule(repo.getId(), Instant.now(), "project", "project/*",
+                        "main", null, false, false,
+                        "项目交付分支：客户实例的工程线，基于产品 main 拉出；客制化经 feature/* MR 合入，产品升级经 release/* MR 合入（docs/v2/16 §1）"));
+                log.info("[branch-rule-seed] 仓库 {} 已补 project/* 交付分支规则", repo.getRepoPath());
+            }
         }
     }
 
@@ -69,7 +82,9 @@ public class BranchRuleSeeder implements ApplicationRunner {
                 rule(repoId, now, "fix", "fix/*", "develop", "develop", false, false,
                         "修复分支：基于 develop 拉出，完成后经 MR 合回 develop"),
                 rule(repoId, now, "poc", "poc/*", null, null, true, true,
-                        "技术验证分支：可基于任意分支拉出，允许直接推送，验证后归档或删除，不设固定合入目标")
+                        "技术验证分支：可基于任意分支拉出，允许直接推送，验证后归档或删除，不设固定合入目标"),
+                rule(repoId, now, "project", "project/*", "main", null, false, false,
+                        "项目交付分支：客户实例的工程线，基于产品 main 拉出；客制化经 feature/* MR 合入，产品升级经 release/* MR 合入（docs/v2/16 §1）")
         );
     }
 

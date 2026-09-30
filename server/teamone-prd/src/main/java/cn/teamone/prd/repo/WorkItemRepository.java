@@ -99,6 +99,22 @@ public interface WorkItemRepository
             + "GROUP BY parent_id", nativeQuery = true)
     List<ChildCountView> childStatsByParentIds(@Param("ids") Collection<UUID> parentIds);
 
+    /** ⑥s 需求池：待排期需求（draft/pending_review/accepted；in_dev 起视为已排期） */
+    List<WorkItem> findByTypeAndStatusIn(String type, Collection<String> statuses);
+
+    /** ⑥s 子项三列视图（执行热度/任务紧急度原料；完结判定在服务层用 doneStatusesOf） */
+    interface ChildView {
+        UUID getParentId();
+        String getPriority();
+        String getStatus();
+        String getType();
+    }
+
+    @org.springframework.data.jpa.repository.Query(
+            "select w.parentId as parentId, w.priority as priority, w.status as status, w.type as type "
+            + "from WorkItem w where w.parentId in :ids")
+    List<ChildView> childViewsByParentIds(@org.springframework.data.repository.query.Param("ids") Collection<UUID> ids);
+
     // ==================== ⑥o 客制化双轨：项目度量与客制化需求视图 ====================
 
     /** 产品的全部工作项数（项目客制化率分母：产品是唯一工程账本） */

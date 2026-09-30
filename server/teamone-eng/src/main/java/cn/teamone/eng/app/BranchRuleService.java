@@ -44,7 +44,7 @@ public class BranchRuleService {
 
     /** 合法分支类型（与 V15 迁移 CHECK 约束一致，应用层先行校验给出可读报错） */
     public static final Set<String> BRANCH_TYPES = Set.of(
-            "main", "develop", "release", "hotfix", "feature", "fix", "poc", "other");
+            "main", "develop", "release", "hotfix", "feature", "fix", "poc", "project", "other");
 
     /** 合法分支模型标识（PUT body.model，配置意图留痕，不落库） */
     private static final Set<String> MODELS = Set.of("gitflow", "github-flow", "custom");
@@ -54,7 +54,7 @@ public class BranchRuleService {
 
     /** 分支类型展示排序（GET 输出与 422 提示的稳定次序） */
     private static final List<String> TYPE_ORDER = List.of(
-            "main", "develop", "release", "hotfix", "feature", "fix", "poc", "other");
+            "main", "develop", "release", "hotfix", "feature", "fix", "poc", "project", "other");
 
     private final BranchRuleRepository branchRuleRepo;
     private final cn.teamone.eng.repo.RepositoryRepository repositoryRepo;
@@ -164,6 +164,12 @@ public class BranchRuleService {
      * 与请求 targetBranch 不同 → ENG_4255（422），message 说明「源分支 X 按分支策略应合入 Y」。
      */
     public void assertMergeTargetAllowed(Repository repo, String sourceBranch, String targetBranch) {
+        // ⑥r 升级例外（docs/v2/16 §1）：目标为 project/* 交付分支的 MR 是「交付域升级动作」，
+        // 不受产品域源规则（release→main / feature→develop 等）约束——否则客户升级无法发起。
+        // 交付分支自身的治理仍由 project/* 规则与分支保护承担。
+        if (targetBranch != null && targetBranch.startsWith("project/")) {
+            return;
+        }
         for (BranchRule rule : findByRepoIdSorted(repo.getId())) {
             boolean hit = matchesGlob(sourceBranch, rule.getNamePattern());
             boolean hasTarget = rule.getMergeTarget() != null && !rule.getMergeTarget().isBlank();
