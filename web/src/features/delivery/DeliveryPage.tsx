@@ -11,7 +11,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { dateStr, daysBetween } from '../../data/store'
 import {
   deploymentsApi, releasesApi,
-  useGateChannel, useReleaseDeployments, useReleasePipelines, useReleases,
+  pipelinesApi,
+  useGateChannel, useProducts, useReleaseDeployments, useReleasePipelines, useReleases, useRepos,
 } from '../../api/queries'
 import type { BlockedChangedPayload, ReleaseDeploymentItem, RemoteRelease } from '../../api/queries'
 import { ApiError } from '../../api/client'
@@ -110,15 +111,41 @@ function TrainCard({ r, selected, justUnlocked, onSelect, nav }: { r: RemoteRele
 }
 
 /** 「流水线」区（R-9 真数据 GET /releases/{id}/pipelines；构建联动规划见 docs/v2/11，本批只读展示） */
-function PipelineSection({ releaseId }: { releaseId: string | undefined }) {
+function PipelineSection({ releaseId, repoName }: { releaseId: string | undefined; repoName?: string }) {
   const { data: items = [], isLoading } = useReleasePipelines(releaseId)
+  const queryClient = useQueryClient()
+  const [triggering, setTriggering] = useState(false)
+  // ⑧ 发布流水线：run 关联版本 → test 成功链式 deploy 作业（制品收集+deployment 自动登记）
+  const triggerReleasePipeline = async () => {
+    if (!releaseId || !repoName) return
+    setTriggering(true)
+    try {
+      // QA MUST-FIX：branch 省略让后端取仓库 defaultBranch；invalidate 对齐真实查询键
+      await pipelinesApi.trigger(repoName, { trigger: 'manual', releaseId })
+      await queryClient.invalidateQueries({ queryKey: ['releases', releaseId, 'pipelines'] })
+      await queryClient.invalidateQueries({ queryKey: ['releases', releaseId, 'deployments'] })
+      await queryClient.invalidateQueries({ queryKey: ['pipelines'] })
+    } finally {
+      setTriggering(false)
+    }
+  }
   return (
     <Card className="mt-4">
-      <CardHeader title="流水线" extra={<span className="text-xs text-txt-low">构建 → 测试 → 质量门禁（只读）· GET /releases/{releaseId}/pipelines · 最新 20 条</span>} />
+      <CardHeader title="流水线" extra={
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-txt-low">构建 → 测试 → 部署（发布流水线）· 最新 20 条</span>
+          <span title={!repoName ? '产品未绑定仓库' : '触发发布流水线：run 关联本版本，test 成功后自动 deploy（制品收集+部署登记）'}>
+            <Btn variant="ghost" disabled={triggering || !repoName}
+              onClick={() => void triggerReleasePipeline()}>
+              <RefreshCw size={12} />{triggering ? '触发中…' : '触发发布流水线'}
+            </Btn>
+          </span>
+        </div>
+      } />
       <div className="px-4 py-3">
         {isLoading && <div className="py-2 text-sm text-txt-low">加载中…</div>}
         {!isLoading && items.length === 0 && (
-          <Empty text="该版本尚未关联流水线（构建联动规划见 CI/CD 规划）" size="sm" />
+          <Empty text="该版本尚未关联流水线——点右上「触发发布流水线」发起（build→test→deploy）" size="sm" />
         )}
         <div className="space-y-2">
           {items.map((p) => (
@@ -183,7 +210,7 @@ function DeploySection({ releaseId }: { releaseId: string | undefined }) {
 
   return (
     <Card className="mt-4">
-      <CardHeader title="部署" extra={<span className="text-xs text-txt-low">开发 → 预发 → 生产 · GET/POST /releases/{releaseId}/deployments · 真实执行联动属 M4/M5</span>} />
+      <CardHeader title="部署" extra={<span className="text-xs text-txt-low">开发 → 预发 → 生产 · GET/POST /releases/{releaseId}/deployments · 发布流水线 deploy 作业自动登记（⑧）+ 手工登记留痕</span>} />
       <div className="grid gap-4 px-4 py-3 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {isLoading && <div className="py-2 text-sm text-txt-low">加载中…</div>}
@@ -272,6 +299,9 @@ export default function DeliveryPage({ nav, id }: PageProps) {
   })
 
   const sel = releases.find((r) => r.id === selId) ?? sorted[0]
+  // ⑧ 发布流水线触发仓：按版本所属产品解析仓库名（一产品一仓约定）
+  const { data: reposData } = useRepos()
+  const repoName = (reposData?.items ?? []).find((r) => sel.productId && r.productId === sel.productId)?.name
 
   const publishMut = useMutation({
     mutationFn: (r: RemoteRelease) => releasesApi.publish(r.key),
@@ -416,7 +446,7 @@ export default function DeliveryPage({ nav, id }: PageProps) {
       )}
 
       {/* 流水线（R-9 真数据；空态给 CI/CD 规划指引） */}
-      {sel && <PipelineSection releaseId={sel.id} />}
+      {sel && <PipelineSection releaseId={sel.id} repoName={repoName} />}
 
       {/* 部署（R-9 真数据 + 管理员登记） */}
       {sel && <DeploySection releaseId={sel.id} />}

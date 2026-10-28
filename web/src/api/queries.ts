@@ -1701,6 +1701,8 @@ export const pipelinesApi = {
     commitSha?: string
     trigger?: string
     mrId?: string
+    /** ⑧ 发布流水线：关联版本——test 成功后链式 deploy 作业（制品收集+deployment 自动登记） */
+    releaseId?: string
   }): Promise<RemotePipelineRun> {
     return api<RemotePipelineRun>(`/api/v1/repos/${encodeURIComponent(repoIdOrName)}/pipelines/trigger`, {
       method: 'POST',

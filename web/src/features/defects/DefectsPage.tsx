@@ -474,9 +474,12 @@ function DefectDrawer({ wid, nav, onClose, users, onTransition }: {
 
         {/* ⑥t 缺陷转需求：修复方案有跨客户复用价值时产品化沉淀 */}
         <div className="mt-3 flex items-center gap-2">
-          <Btn variant="ghost" disabled={converting} onClick={() => void convertToRequirement()}>
-            <ListChecks size={13} />{converting ? '转需求中…' : '转需求'}
-          </Btn>
+          <span title={convertOk ? '该缺陷已转需求（防重复）' : undefined}>
+            <Btn variant="ghost" disabled={converting || convertOk}
+              onClick={() => void convertToRequirement()}>
+              <ListChecks size={13} />{converting ? '转需求中…' : convertOk ? '已转需求' : '转需求'}
+            </Btn>
+          </span>
           {convertMsg && <span className={`text-[11px] ${convertOk ? 'text-ok-deep' : 'text-bad-deep'}`}>{convertMsg}</span>}
         </div>
         {d.labels.length > 0 && (

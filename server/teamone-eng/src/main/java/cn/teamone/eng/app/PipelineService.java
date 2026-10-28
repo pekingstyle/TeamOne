@@ -291,6 +291,10 @@ public class PipelineService {
         if (req != null && req.mrId() != null) {
             run.setMrId(req.mrId());
         }
+        // ⑧ 发布流水线：run 关联版本（deploy 阶段链式条件 + 发布页「流水线」区可见性）
+        if (req != null && req.releaseId() != null) {
+            run.setReleaseId(req.releaseId());
+        }
         run.setTriggerUserId(triggerUserId);
         run.setStartedAt(Instant.now());
 
@@ -624,6 +628,25 @@ public class PipelineService {
             } catch (Exception e) {
                 log.error("[pipeline] run={} 链式创建单测作业失败，run 按 failed 终结: {}", run.getId(), e.getMessage(), e);
                 job.setErrorMsg("链式创建单测作业失败: " + e.getMessage());
+                jobRepo.save(job);
+                run.setStatus("failed");
+                run.setUpdatedAt(Instant.now());
+                pipelineRepo.save(run);
+            }
+            return false;
+        }
+        // ⑧ 部署流水线化（docs/v2/18）：发布流水线（run.release_id 非空）test 成功后
+        // 链式建 deploy 作业（制品收集+deployment 自动登记；普通 MR/CI 流水线不部署）
+        if (success && "test".equals(job.getStage()) && run.getReleaseId() != null) {
+            run.setStatus("running");
+            run.setUpdatedAt(Instant.now());
+            pipelineRepo.save(run);
+            try {
+                createNextJob(run, "deploy");
+                log.info("[pipeline] run={} 单测成功，发布流水线链式创建部署作业", run.getId());
+            } catch (Exception e) {
+                log.error("[pipeline] run={} 链式创建部署作业失败，run 按 failed 终结: {}", run.getId(), e.getMessage(), e);
+                job.setErrorMsg("链式创建部署作业失败: " + e.getMessage());
                 jobRepo.save(job);
                 run.setStatus("failed");
                 run.setUpdatedAt(Instant.now());

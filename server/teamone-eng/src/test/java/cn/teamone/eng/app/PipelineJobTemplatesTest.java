@@ -48,6 +48,7 @@ class PipelineJobTemplatesTest {
     @Test
     void jobNames() {
         assertEquals("构建", PipelineJobTemplates.jobName("build"));
+        // ⑧ 部署作业名映射在 jobNames 用例尾部断言
         assertEquals("单测", PipelineJobTemplates.jobName("test"));
     }
 
@@ -59,6 +60,9 @@ class PipelineJobTemplatesTest {
 
     @Test
     void unknownStage_rejected() {
-        assertThrows(IllegalArgumentException.class, () -> PipelineJobTemplates.cmd("maven", "deploy", ""));
+        // ⑧ deploy 为合法阶段：自足式 maven package（独立工作区，Runner 收集制品+登记）
+        assertEquals("mvn -q -f pom.xml package -DskipTests", PipelineJobTemplates.cmd("maven", "deploy", ""));
+        assertEquals("部署", PipelineJobTemplates.jobName("deploy"));
+        assertThrows(IllegalArgumentException.class, () -> PipelineJobTemplates.cmd("maven", "nonsense", ""));
     }
 }

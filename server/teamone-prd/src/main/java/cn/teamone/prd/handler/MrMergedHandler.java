@@ -79,10 +79,13 @@ public class MrMergedHandler implements W3EventHandler {
             transitions.transition(item.getId(), WorkItem.STATUS_DONE, actor);
             log.info("[mr-merged] Closes 语义：{} 自动流转 done（MR !{}）",
                     key, payload.path("mrNumber").asText(""));
-        } catch (cn.teamone.shared.api.BusinessException | cn.teamone.shared.api.PermissionDeniedException ex) {
-            // QA MUST-FIX ①：仅永久性业务拒绝跳过（状态机非法流转/权限失配）——
-            // DataAccessException 等基础设施故障必须放行给 PEL 重投（at-least-once，
-            // 吞掉=瞬时故障即回写永久丢失），对齐 WorkitemUpdatedHandler 先例
+        } catch (cn.teamone.shared.api.PermissionDeniedException ex) {
+            // ⑧ 挂账清偿：合并者无 product edit 权限时 Closes 被拒——独立 ERROR（主打功能静默失效需运营可见）
+            log.error("[mr-merged] Closes 语义因权限失配未生效: {} 合并者无 product edit 权限（{}）",
+                    key, ex.getMessage());
+        } catch (cn.teamone.shared.api.BusinessException ex) {
+            // QA MUST-FIX ①：仅状态机永久性拒绝跳过（非法流转）——
+            // DataAccessException 等基础设施故障必须放行给 PEL 重投（at-least-once）
             log.warn("[mr-merged] {} 自动流转业务性跳过: {}", key, ex.getMessage());
         }
     }

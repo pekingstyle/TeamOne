@@ -127,6 +127,7 @@ export default function ImPage({ nav, id }: PageProps) {
       await queryClient.invalidateQueries({ queryKey: ['requirements'] })
       await queryClient.invalidateQueries({ queryKey: ['backlog-pool'] })
       setTopicReqOpen(false)
+      setTopicReqProductId('')
       setTopicReqMsg({ ok: true, text: `已转需求 ${req.key}（草稿，可在需求池查看）` })
     } catch (e) {
       setTopicReqMsg({ ok: false, text: e instanceof Error ? e.message : '转需求失败' })

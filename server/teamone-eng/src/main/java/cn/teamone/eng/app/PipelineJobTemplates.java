@@ -27,6 +27,8 @@ public final class PipelineJobTemplates {
     /** 作业展示名 */
     public static final String BUILD_JOB_NAME = "构建";
     public static final String TEST_JOB_NAME = "单测";
+    /** ⑧ 部署作业（发布流水线专有：制品收集+deployment 自动登记，纯 Java 无 cmd） */
+    public static final String DEPLOY_JOB_NAME = "部署";
 
     /**
      * 按构建体系与阶段生成作业命令。
@@ -40,6 +42,14 @@ public final class PipelineJobTemplates {
         String dir = (workdir == null) ? "" : workdir.trim();
         boolean maven = "maven".equals(buildSystem);
         if ("build".equals(stage)) {
+            return maven
+                    ? "mvn -q -f " + (dir.isEmpty() ? "pom.xml" : dir + "/pom.xml") + " package -DskipTests"
+                    : "npm ci" + (dir.isEmpty() ? "" : " --prefix " + dir);
+        }
+        if ("deploy".equals(stage)) {
+            // ⑧ 部署自足式：每作业独立工作区（重新导出+自身 package），产物在自身工作区收集——
+            // 不依赖 build 作业遗留目录（teamone-ws 卷重挂/清理即失效的教训）。Runner 按 stage
+            // 在 maven 执行成功后做制品收集+deployment 登记（纯 Java）。
             return maven
                     ? "mvn -q -f " + (dir.isEmpty() ? "pom.xml" : dir + "/pom.xml") + " package -DskipTests"
                     : "npm ci" + (dir.isEmpty() ? "" : " --prefix " + dir);
@@ -59,6 +69,9 @@ public final class PipelineJobTemplates {
      * @return 展示名
      */
     public static String jobName(String stage) {
+        if ("deploy".equals(stage)) {
+            return DEPLOY_JOB_NAME;
+        }
         return "test".equals(stage) ? TEST_JOB_NAME : BUILD_JOB_NAME;
     }
 

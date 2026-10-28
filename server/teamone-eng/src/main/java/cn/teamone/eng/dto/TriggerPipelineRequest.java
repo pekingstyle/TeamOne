@@ -25,6 +25,8 @@ public record TriggerPipelineRequest(
         String branch,
         String commitSha,
         String trigger,
-        UUID mrId
+        UUID mrId,
+        /** ⑧ 发布流水线：关联版本（run.release_id）——test 成功后链式建 deploy 作业，自动登记部署 */
+        UUID releaseId
 ) {}
 

@@ -44,6 +44,7 @@ import static org.mockito.Mockito.*;
 class PipelineServiceRealExecutionTest {
 
     private static final String SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b2c3d4e5f8a9b0";
+    private static final UUID RELEASE_ID = UUID.randomUUID();
     private static final UUID REPO_ID = UUID.randomUUID();
     private static final UUID RUN_ID = UUID.randomUUID();
     private static final UUID MR_ID = UUID.randomUUID();
@@ -197,7 +198,7 @@ class PipelineServiceRealExecutionTest {
         PipelineService simulated = service(true);
 
         PipelineRunResponse resp = simulated.triggerPipeline("teamone",
-                new cn.teamone.eng.dto.TriggerPipelineRequest(null, null, "manual", MR_ID),
+                new cn.teamone.eng.dto.TriggerPipelineRequest(null, null, "manual", MR_ID, null),
                 UUID.randomUUID());
 
         assertTrue(savedJobs.isEmpty(), "模拟路径不建作业行");
@@ -300,6 +301,60 @@ class PipelineServiceRealExecutionTest {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> stageJobs = (List<Map<String, Object>>) testStage.get("jobs");
         assertEquals("passed", stageJobs.get(0).get("status"));
+    }
+
+    /** ⑧ QA MUST-FIX：发布流水线（releaseId 非空）test 成功→链式建 deploy 作业，run 保持 running */
+    @Test
+    void complete_testSuccess_releaseRun_chainsDeployJob() {
+        PipelineJob buildJob = runningJob("build", 1);
+        buildJob.setStatus("success");
+        buildJob.setFinishedAt(Instant.now().minusSeconds(30));
+        PipelineJob testJob = runningJob("test", 2);
+        when(jobRepo.findById(testJob.getId())).thenReturn(Optional.of(testJob));
+        PipelineRun r = run("maven", "server");
+        r.setReleaseId(RELEASE_ID);
+        when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
+        savedJobs.add(buildJob);
+
+        boolean runFinished = service.completeJobAndAdvance(
+                testJob.getId(), 0, "[INFO] Tests run: 15", null,
+                new TestSummary(15, 0, 0, 2, 3), null);
+
+        org.junit.jupiter.api.Assertions.assertFalse(runFinished, "deploy 未收口，run 保持 running");
+        org.junit.jupiter.api.Assertions.assertEquals("running", r.getStatus());
+        // 链式作业断言：save 的最后一个 job stage=deploy
+        PipelineJob last = savedJobs.get(savedJobs.size() - 1);
+        org.junit.jupiter.api.Assertions.assertEquals("deploy", last.getStage());
+        org.junit.jupiter.api.Assertions.assertEquals("部署", last.getName());
+    }
+
+    /** ⑧ QA MUST-FIX：无 releaseId（普通 MR/CI 流水线）test 成功直 finalize，不建 deploy */
+    @Test
+    void complete_testSuccess_noRelease_finalizesWithoutDeploy() {
+        PipelineJob testJob = runningJob("test", 2);
+        when(jobRepo.findById(testJob.getId())).thenReturn(Optional.of(testJob));
+        PipelineRun r = run("maven", "server");
+        when(pipelineRepo.findById(RUN_ID)).thenReturn(Optional.of(r));
+
+        boolean runFinished = service.completeJobAndAdvance(
+                testJob.getId(), 0, "[INFO] Tests run: 15", null,
+                new TestSummary(15, 0, 0, 2, 3), null);
+
+        org.junit.jupiter.api.Assertions.assertTrue(runFinished);
+        org.junit.jupiter.api.Assertions.assertEquals("passed", r.getStatus());
+        org.junit.jupiter.api.Assertions.assertTrue(savedJobs.stream().noneMatch(j -> "deploy".equals(j.getStage())));
+    }
+
+    /** ⑧ pending 作业 fixture（链式用例） */
+    private PipelineJob pendingJob(String stage, int seq) {
+        PipelineJob j = new PipelineJob();
+        j.setId(UUID.randomUUID());
+        j.setRunId(RUN_ID);
+        j.setStage(stage);
+        j.setSeq(seq);
+        j.setStatus("pending");
+        j.setName("deploy".equals(stage) ? "部署" : stage);
+        return j;
     }
 
     @Test

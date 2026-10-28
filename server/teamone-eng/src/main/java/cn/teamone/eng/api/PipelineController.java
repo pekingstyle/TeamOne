@@ -34,9 +34,16 @@ import java.util.UUID;
 public class PipelineController {
 
     private final PipelineService pipelineService;
+    private final cn.teamone.eng.app.RepoPermChecker permChecker;
 
-    public PipelineController(PipelineService pipelineService) {
+    /** ⑧ 制品下载根（与 Runner workspaceRoot 同键；server 容器内 /teamone-ws 即宿主卷） */
+    @org.springframework.beans.factory.annotation.Value("${teamone.pipeline.workspace-dir:/teamone-ws}")
+    private String workspaceDir;
+
+    public PipelineController(PipelineService pipelineService,
+            cn.teamone.eng.app.RepoPermChecker permChecker) {
         this.pipelineService = pipelineService;
+        this.permChecker = permChecker;
     }
 
     /**
@@ -99,6 +106,44 @@ public class PipelineController {
      * @param id 流水线记录的唯一标识 UUID
      * @return 重新触发后的流水线最新运行快照
      */
+    /**
+     * ⑧ 制品下载（docs/v2/18）：部署作业收集的 jar（{ws}/deploy/{runId}/ 稳定路径）。
+     * ACL：仓库 view（制品属仓库产物只读面）；404=该运行未部署或制品已清理。
+     */
+    @GetMapping("/repos/{idOrName}/pipelines/{id}/artifact")
+    public org.springframework.http.ResponseEntity<org.springframework.core.io.Resource> artifact(
+            @PathVariable String idOrName, @PathVariable UUID id) throws java.io.IOException {
+        // QA MUST-FIX：run→仓库归属校验（ACL 锚点=run 关联仓库——A 仓 view 不得取 B 仓 run 制品）。
+        // getPipeline 内部已按 run.repoId 断言 view；此处仅校验 URL 仓与 run 仓一致（不一致 404 防跨仓枚举）。
+        var runResp = pipelineService.getPipeline(currentMe(), id);
+        cn.teamone.eng.domain.Repository repo = pipelineService.findRepo(idOrName);
+        if (!runResp.repoId().equals(repo.getId())) {
+            throw new cn.teamone.shared.api.BusinessException(cn.teamone.shared.api.ErrorCode.PLT_4040,
+                    "流水线运行不属于该仓库");
+        }
+        java.nio.file.Path dir = java.nio.file.Path.of(workspaceDir, "deploy", id.toString());
+        if (!java.nio.file.Files.exists(dir)) {
+            return org.springframework.http.ResponseEntity.notFound().build();
+        }
+        try (var walk = java.nio.file.Files.walk(dir)) {
+            var jar = walk.filter(p -> p.toString().endsWith(".jar")).findFirst().orElse(null);
+            if (jar == null) {
+                return org.springframework.http.ResponseEntity.notFound().build();
+            }
+            var res = new org.springframework.core.io.FileSystemResource(jar);
+            return org.springframework.http.ResponseEntity.ok()
+                    .header("Content-Disposition", "attachment; filename=\"" + jar.getFileName() + "\"")
+                    .contentLength(res.contentLength())
+                    .body(res);
+        }
+    }
+
+    /** 当前登录主体（制品只读面；未认证由安全链拦截） */
+    private cn.teamone.platform.domain.AppUser currentMe() {
+        var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.getPrincipal() instanceof cn.teamone.platform.domain.AppUser u ? u : null;
+    }
+
     @PostMapping("/pipelines/{id}/rerun")
     public PipelineRunResponse rerunPipeline(
             @AuthenticationPrincipal AppUser me,

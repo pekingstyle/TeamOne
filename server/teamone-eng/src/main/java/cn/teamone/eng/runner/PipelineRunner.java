@@ -27,6 +27,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -117,6 +118,7 @@ public class PipelineRunner {
     private final PipelineRunRepository runRepo;
     private final RepositoryRepository repositoryRepo;
     private final MergeRequestRepository mrRepo;
+    private final cn.teamone.eng.repo.DeploymentRepository deploymentRepo;
 
     /** 毒作业防护：认领次数上限（认领后 attempt≥本值直接 failed 不执行；可配） */
     @Value("${teamone.pipeline.max-attempts:3}")
@@ -141,7 +143,8 @@ public class PipelineRunner {
                           PipelineJobRepository jobRepo,
                           PipelineRunRepository runRepo,
                           RepositoryRepository repositoryRepo,
-                          MergeRequestRepository mrRepo) {
+                          MergeRequestRepository mrRepo,
+                          cn.teamone.eng.repo.DeploymentRepository deploymentRepo) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.pipelineService = pipelineService;
@@ -151,6 +154,7 @@ public class PipelineRunner {
         this.runRepo = runRepo;
         this.repositoryRepo = repositoryRepo;
         this.mrRepo = mrRepo;
+        this.deploymentRepo = deploymentRepo;
     }
 
     /** 认领分发（5s 轮询；事务内 SKIP LOCKED 抢行 → 交执行线程池） */
@@ -194,6 +198,56 @@ public class PipelineRunner {
         } catch (RejectedExecutionException e) {
             executing.set(false);
             log.error("[pipeline-runner] 作业 {} 派发失败（线程池已关闭）", jobId);
+        }
+    }
+
+    /**
+     * ⑧ 部署执行（docs/v2/18）：从作业工作区收集构建制品（mvn package 产物 jar，
+     * build 作业已在同一工作区结构落盘——deploy 作业重新导出同 commit，jar 由本作业
+     * 无法继承——因此部署作业直接在工作区执行 mvn jar 定位？否——deploy 作业工作区
+     * 为全新导出（无 target）。制品真源=build 作业工作区 {ws}/teamone-job-{buildJobId}。
+     * 这里按 run 找 build 作业目录收集，拷贝到稳定路径 {ws}/deploy/{runId}/，
+     * 并登记 eng.deployment（env=staging，pipeline_run_id 关联）。
+     */
+    private String deployArtifact(java.nio.file.Path ownWorkspace, PipelineRun run) {
+        try {
+            // 制品真源=deploy 作业自身工作区（自足式：本作业已 package，jar 必在）
+            java.nio.file.Path jar;
+            try (var walk = java.nio.file.Files.walk(ownWorkspace)) {
+                // 多模块仓库 target/ 下有 N 个模块 jar——boot fat jar 体积最大，取最大者为主制品
+                jar = walk.filter(p -> p.getFileName().toString().endsWith(".jar"))
+                        .filter(p -> !p.getFileName().toString().endsWith("-sources.jar"))
+                        .filter(p -> !p.toString().contains(File.separator + "original-"))
+                        .max(java.util.Comparator.comparingLong(PipelineRunner::sizeOf))
+                        .orElseThrow(() -> new IllegalStateException("工作区未找到构建制品 jar（deploy 阶段 package 产物）"));
+            }
+            java.nio.file.Path deployDir = workspaceRoot().resolve("deploy").resolve(run.getId().toString());
+            java.nio.file.Files.createDirectories(deployDir);
+            java.nio.file.Path target = deployDir.resolve(jar.getFileName().toString());
+            java.nio.file.Files.copy(jar, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            String relative = workspaceRoot().relativize(target).toString().replace(File.separatorChar, '/');
+
+            cn.teamone.eng.domain.Deployment d = new cn.teamone.eng.domain.Deployment();
+            d.setReleaseId(run.getReleaseId());
+            d.setEnv("staging");
+            d.setStatus("success");
+            d.setArtifactVersion(jar.getFileName().toString());
+            d.setNote("artifact: " + relative + "（⑧ 部署作业自动登记）");
+            d.setPipelineRunId(run.getId());
+            d.setDeployedBy(run.getTriggerUserId());
+            deploymentRepo.save(d);
+            log.info("[pipeline-runner] run={} 部署完成：制品 {} → {}", run.getId(), jar.getFileName(), relative);
+            return "制品收集完成: " + relative + "（deployment 已登记 env=staging）";
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("制品收集 IO 失败: " + e.getMessage(), e);
+        }
+    }
+
+    private static long sizeOf(java.nio.file.Path p) {
+        try {
+            return java.nio.file.Files.size(p);
+        } catch (java.io.IOException e) {
+            return 0L;
         }
     }
 
@@ -292,9 +346,26 @@ public class PipelineRunner {
                     ? assembleCoverage(workspace, run, repo, agentInjected)
                     : null;
 
+            // 5.5) ⑧ 部署阶段收尾（docs/v2/18）：deploy 作业（自足式 package）成功后
+            //      从【自身工作区】收集 jar → {ws}/deploy/{runId}/ 稳定路径 + eng.deployment
+            //      自动登记（env=staging / artifact_version=jar 名 / note=制品相对路径）。
+            String deployLog = null;
+            if ("deploy".equals(job.getStage()) && out.success()) {
+                try {
+                    deployLog = deployArtifact(workspace, run);
+                } catch (Exception e) {
+                    // 制品收集失败 = deploy 作业失败（发布流水线不允许"部署成功但无制品"）
+                    pipelineService.completeJobAndAdvance(jobId, out.exitCode(),
+                            out.logTail(), "制品收集失败: " + e.getMessage(), null, null);
+                    return;
+                }
+            }
+
             // 6) 收口 + 链式推进（build 成功建 test；终态聚合 run + stages 快照回写含覆盖率摘要）
             boolean runFinished = pipelineService.completeJobAndAdvance(
-                    jobId, out.exitCode(), out.logTail(), out.errorMsg(), summary, coverage);
+                    jobId, out.exitCode(),
+                    deployLog == null ? out.logTail() : out.logTail() + '\n' + deployLog,
+                    out.errorMsg(), summary, coverage);
 
             // 7) MR 门禁真实回填（run 终态 + 有真实单测聚合；无报告不动门禁；
             //    独立事务、失败仅 WARN——不回滚已收口的作业状态）

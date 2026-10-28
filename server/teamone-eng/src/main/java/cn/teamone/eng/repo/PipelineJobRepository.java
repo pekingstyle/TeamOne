@@ -34,6 +34,8 @@ public interface PipelineJobRepository extends JpaRepository<PipelineJob, UUID> 
      */
     Optional<PipelineJob> findFirstByRunIdOrderBySeqDesc(UUID runId);
 
+
+
     /**
      * 删除 run 全部作业（真实模式 rerun 重置作业链用；调用方须在事务内）。
      *
