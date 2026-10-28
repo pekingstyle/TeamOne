@@ -52,6 +52,7 @@ class MergeRequestServiceTest {
     private BranchRuleService branchRuleService;
     private cn.teamone.eng.infra.git.GitPort gitPort;
     private AuditService audit;
+    private cn.teamone.platform.infra.OutboxWriter outbox;
     private RepoPermChecker permChecker;
     private MergeRequestService service;
 
@@ -74,9 +75,11 @@ class MergeRequestServiceTest {
         // M-b：平台 PermissionService 换 RepoPermChecker 仓库回退检查器（mock 放行）
         permChecker = mock(RepoPermChecker.class);
 
+        outbox = mock(cn.teamone.platform.infra.OutboxWriter.class);
         service = new MergeRequestService(mrRepo, reviewerRepo, checkRepo, commentRepo,
                 mock(MergeConflictResolutionRepository.class), repositoryRepo,
-                branchProtectionService, branchRuleService, gitPort, audit, permChecker, 60, 80);
+                branchProtectionService, branchRuleService, gitPort, audit, permChecker,
+                outbox, 60, 80);
     }
 
     private MergeRequest mr(String status) {
@@ -285,5 +288,29 @@ class MergeRequestServiceTest {
         assertEquals("merged", mr.getStatus());
         // 删除失败不写「已自动删除」评论（评论与事实一致）
         verify(commentRepo, never()).save(any());
+    }
+
+    /** ⑦ QA N8：生产端事件断言——linkedWorkItemKey 非空才发、isDefaultBranch 就地计算 */
+    @org.junit.jupiter.api.Test
+    void mergeEmitsMrMergedEventWhenLinked() throws Exception {
+        MergeRequest mr = mr("open");
+        mr.setTargetBranch("main");
+        mr.setLinkedWorkItemKey("T-9");
+        stubMergeGatePassing(mr);
+        when(mrRepo.findById(mr.getId())).thenReturn(java.util.Optional.of(mr));
+        cn.teamone.eng.domain.Repository repoMock = repo();
+        repoMock.setDefaultBranch("main");
+        when(repositoryRepo.findById(mr.getRepoId())).thenReturn(java.util.Optional.of(repoMock));
+
+        service.merge(mr.getId(), java.util.UUID.randomUUID());
+
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> payloadCap =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        org.mockito.Mockito.verify(outbox).append(
+                org.mockito.ArgumentMatchers.eq("mr"), org.mockito.ArgumentMatchers.eq(mr.getId()),
+                org.mockito.ArgumentMatchers.eq("mr.merged"), payloadCap.capture(),
+                org.mockito.ArgumentMatchers.any(java.util.UUID.class));
+        org.junit.jupiter.api.Assertions.assertEquals(Boolean.TRUE, payloadCap.getValue().get("isDefaultBranch"));
+        org.junit.jupiter.api.Assertions.assertEquals("T-9", payloadCap.getValue().get("linkedWorkItemKey"));
     }
 }

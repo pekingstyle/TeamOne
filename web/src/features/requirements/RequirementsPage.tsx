@@ -18,6 +18,7 @@ import type { BacklogBreakdown, RemoteRequirementRound } from '../../api/queries
 import { useAuth } from '../../api/AuthContext'
 import { toBrief, useUserBriefs } from '../../api/users'
 import { Avatar, Bar, Btn, Card, Empty, PageHeader, Pill, PriorityBadge, Spinner } from '../../components/ui'
+import { RelatedBranches } from '../../components/RelatedBranches'
 
 const statusText: Record<ReqStatus, string> = {
   draft: '草稿', pending_review: '待评审', accepted: '已受理', in_dev: '开发中',
@@ -771,7 +772,7 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
               )
             )}
             {rq.status === 'accepted' && (
-              <RealScheduleBox rq={rq} onPatched={onPatched} onFlowErr={(m) => setFlowErr(m)} />
+              <ScheduleRow rq={rq} onPatched={onPatched} />
             )}
             {rq.status === 'in_dev' && (
               <Btn disabled={busy} onClick={() => void advance('delivered')}>标记已交付（随版本发布）</Btn>
@@ -813,8 +814,14 @@ function ReqDrawer({ rq, nav, onClose, onPatched }: {
           </div>
         </div>
 
+        {/* ⑦-3 排期入口（accepted 态）：绑定交付版本与迭代（状态保持 accepted） */}
+        {rq.status === 'accepted' && <ScheduleRow rq={rq} onPatched={onPatched} />}
+
         {/* 话题入口：真实话题（会话 REST 按 targetType/targetId 反查，跳即时沟通） */}
         <ReqTopicLink requirementId={rq.id} title={rq.title} nav={nav} />
+
+        {/* ⑦ 关联分支（GitLab 语义：feature/<KEY>，一键创建） */}
+        <RelatedBranches workItemKey={rq.key} productId={rq.productId} />
       </aside>
     </div>
   )
@@ -938,56 +945,6 @@ function RoundCard({ rqKey, round, briefs, busy, onChanged, onFlowErr }: {
         <input value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="纪要摘要（可选，随上传一并保存）"
           className="mt-1.5 w-full rounded-input border border-line bg-canvas px-2 py-1 text-[11px] text-txt-hi outline-none focus:border-brand" />
       )}
-    </div>
-  )
-}
-
-// ==================== 排期：真实需求走 POST /schedule；原型行走 store ====================
-
-/** 真实需求排期（版本/迭代为真实实体；RoadMap 条目选择不在本批范围，留空跳过） */
-function RealScheduleBox({ rq, onPatched, onFlowErr }: {
-  rq: Requirement
-  onPatched: (rid: string, patch: Partial<Requirement>) => void
-  onFlowErr: (message: string) => void
-}) {
-  const { data: relRows = [] } = useReleases()
-  const { data: spRows = [] } = useSprints()
-  const [releaseId, setReleaseId] = useState('')
-  const [sprintId, setSprintId] = useState('')
-  const [busy, setBusy] = useState(false)
-  const schedule = async () => {
-    setBusy(true)
-    onFlowErr('')
-    try {
-      const updated = await requirementsApi.schedule(rq.key, {
-        releaseId: releaseId || undefined,
-        sprintId: sprintId || undefined,
-      })
-      onPatched(rq.id, {
-        status: updated.status as Requirement['status'],
-        releaseId: releaseId || undefined,
-        sprintId: sprintId || undefined,
-      })
-    } catch (e) {
-      onFlowErr(e instanceof Error ? e.message : '排期失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <div className="space-y-2">
-      <div className="text-xs text-txt-low">已受理，选择排期（版本 / 迭代，真实 API）：</div>
-      <div className="grid grid-cols-2 gap-2">
-        <select value={releaseId} onChange={(e) => setReleaseId(e.target.value)} className={inputCls}>
-          <option value="">版本…</option>
-          {relRows.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-        </select>
-        <select value={sprintId} onChange={(e) => setSprintId(e.target.value)} className={inputCls}>
-          <option value="">迭代…</option>
-          {spRows.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-        </select>
-      </div>
-      <Btn variant="primary" disabled={busy} onClick={() => void schedule()}>确认排期</Btn>
     </div>
   )
 }
@@ -1446,6 +1403,63 @@ function BacklogPool({ productId, nav }: { productId?: string; nav: PageProps['n
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ==================== 排期入口（⑦-3 · docs/v2/17 §4）：受理后绑定版本/迭代 ====================
+function ScheduleRow({ rq, onPatched }: { rq: Requirement; onPatched: (rid: string, patch: Partial<Requirement>) => void }) {
+  const queryClient = useQueryClient()
+  const { data: sprintRows } = useSprints()
+  const { data: releaseRows } = useReleases()
+  const [schedBusy, setSchedBusy] = useState(false)
+  const [schedMsg, setSchedMsg] = useState('')
+  const schedule = async (patch: { sprintId?: string; releaseId?: string }) => {
+    setSchedBusy(true)
+    setSchedMsg('')
+    try {
+      const updated = await requirementsApi.schedule(rq.key, patch)
+      await queryClient.invalidateQueries({ queryKey: ['requirements'] })
+      await queryClient.invalidateQueries({ queryKey: ['backlog-pool'] })
+      onPatched(rq.id, {
+        sprintId: updated.sprintId,
+        releaseId: updated.releaseId,
+        estimatePoints: updated.storyPoints != null ? Number(updated.storyPoints) : undefined,
+      })
+      setSchedMsg(`已排期：${updated.sprintId ? '迭代已绑定 ' : ''}${updated.releaseId ? '版本已绑定' : ''}`.trim())
+    } catch (e) {
+      setSchedMsg(e instanceof Error ? e.message : '排期失败')
+    } finally {
+      setSchedBusy(false)
+    }
+  }
+  const sprintOptions = (sprintRows ?? []).filter((sp) => !sp.completedAt)
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-txt-low">
+        排期（已受理）——绑定交付版本与迭代后进入执行
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <select
+          className="rounded-input border border-line bg-canvas px-2 py-1 text-txt-hi"
+          value={rq.sprintId ?? ''}
+          disabled={schedBusy}
+          onChange={(e) => void schedule({ sprintId: e.target.value || undefined })}
+        >
+          <option value="">排入迭代…</option>
+          {sprintOptions.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+        </select>
+        <select
+          className="rounded-input border border-line bg-canvas px-2 py-1 text-txt-hi"
+          value={rq.releaseId ?? ''}
+          disabled={schedBusy}
+          onChange={(e) => void schedule({ releaseId: e.target.value || undefined })}
+        >
+          <option value="">挂交付版本…</option>
+          {(releaseRows ?? []).map((rl) => <option key={rl.id} value={rl.id}>{rl.name}</option>)}
+        </select>
+        {schedMsg && <span className="text-[11px] text-txt-low">{schedMsg}</span>}
+      </div>
     </div>
   )
 }

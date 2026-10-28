@@ -16,6 +16,9 @@ import { teamOneWs } from './ws'
 
 /** GET /api/v1/work-items 原始条目（非空字段实测；labels 是 JSON 字符串） */
 export interface RemoteWorkItem {
+  /** ⑥t/⑦：排期绑定字段（schedule/Views 投影；releaseId 原有） */
+  sprintId?: string
+  storyPoints?: number | string
   id: string
   key: string
   type: string

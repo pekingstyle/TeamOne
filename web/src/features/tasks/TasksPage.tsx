@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { WorkItem, WorkItemStatus } from '../../data/types'
 import { dateStr, daysBetween, defectStatusFlow, severityTone, workItemStatusText } from '../../data/store'
 import { Avatar, Btn, Card, Empty, PageHeader, Pill, PriorityBadge } from '../../components/ui'
+import { RelatedBranches } from '../../components/RelatedBranches'
 import type { PageProps } from '../../nav'
 import {
   useMergeRequests, useGoals, useProducts, useReleases, useRoadmapItems,
@@ -620,6 +621,9 @@ function WorkDrawer({
             {!w.requirementId && !rm && !rel && realLinkedMrs.length === 0 && !brid && <span className="text-xs text-txt-low">无关联对象</span>}
           </div>
         </div>
+
+        {/* ⑦ 关联分支（GitLab 语义：feature/<KEY>，一键创建） */}
+        <RelatedBranches workItemKey={w.key} productId={w.productId} />
 
         <div className="mt-auto pt-4 text-[11px] text-txt-low">
           创建于 {w.createdAt} · 更新于 {w.updatedAt} · {w.type === 'defect' ? '缺陷中心可推进缺陷状态流转' : '看板卡片悬停可「→ 推进」'}

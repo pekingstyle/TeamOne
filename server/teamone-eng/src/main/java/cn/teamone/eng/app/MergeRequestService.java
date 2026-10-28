@@ -73,6 +73,7 @@ public class MergeRequestService {
     private final GitPort gitPort;
     private final AuditService audit;
     private final RepoPermChecker permChecker;
+    private final cn.teamone.platform.infra.OutboxWriter outbox;
 
     /** 单测门禁双阈值（teamone.mr.gate.total-coverage / patch-coverage，默认 60/80） */
     private final double totalCoverageGate;
@@ -90,6 +91,7 @@ public class MergeRequestService {
             GitPort gitPort,
             AuditService audit,
             RepoPermChecker permChecker,
+            cn.teamone.platform.infra.OutboxWriter outbox,
             @Value("${teamone.mr.gate.total-coverage:60}") double totalCoverageGate,
             @Value("${teamone.mr.gate.patch-coverage:80}") double patchCoverageGate) {
         this.mrRepo = mrRepo;
@@ -103,6 +105,7 @@ public class MergeRequestService {
         this.gitPort = gitPort;
         this.audit = audit;
         this.permChecker = permChecker;
+        this.outbox = outbox;
         this.totalCoverageGate = totalCoverageGate;
         this.patchCoverageGate = patchCoverageGate;
     }
@@ -652,6 +655,24 @@ public class MergeRequestService {
         } catch (Exception e) {
             log.warn("[mr-merge] 源分支自动删除/留痕失败（不影响合并结果）: repo={} branch={} msg={}",
                     repo.getRepoPath(), mr.getSourceBranch(), e.getMessage());
+        }
+
+        // 6. ⑦ Closes 语义事件（docs/v2/17 §2）：mr.merged → prd MrMergedHandler 消费回写
+        //    关联工作项（仅默认分支合并触发；task 流转走状态机，业务性跳过不重投）。
+        //    eng 只发事件不 import prd（依赖方向），跨域回写走事件驱动集成正道。
+        // QA MUST-FIX ②：不包 try-catch——outbox.append 与本事务 REQUIRED 同生共死（平台 MUST：
+        // 事件与业务原子），catch 既拦不住 rollback-only 又把「git 已并+库回滚」搅成误导性 WARN。
+        if (mr.getLinkedWorkItemKey() != null && !mr.getLinkedWorkItemKey().isBlank()) {
+            boolean defaultBranch = mr.getTargetBranch() != null
+                    && mr.getTargetBranch().equalsIgnoreCase(repo.getDefaultBranch());
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("mrNumber", mr.getMrNumber());
+            payload.put("linkedWorkItemKey", mr.getLinkedWorkItemKey());
+            payload.put("targetBranch", mr.getTargetBranch());
+            payload.put("isDefaultBranch", defaultBranch);
+            payload.put("mergeCommitSha", commitSha);
+            payload.put("mergedBy", userId.toString());
+            outbox.append("mr", mr.getId(), "mr.merged", payload, userId);
         }
 
         return new MergeResultResponse(true, commitSha, "合并成功");
